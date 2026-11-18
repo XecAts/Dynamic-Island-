@@ -1069,7 +1069,8 @@ fun DrawScope.islandGlow(color: Color, alpha: Float, corner: Float, notch: Boole
 
 /** Контур формы острова со скруглением [corner] в [topLeft] — для свечения, волн и кромки вокруг него. */
 private fun DrawScope.islandOutline(topLeft: Offset, size: Size, corner: Float, notch: Boolean, draw: DrawScope.(Outline) -> Unit) {
-    val outline = islandShape(corner.coerceAtLeast(0f).toDp(), notch).createOutline(size, layoutDirection, this)
+    val outline = if (notch) islandShape(corner.coerceAtLeast(0f).toDp(), notch).createOutline(size, layoutDirection, this)
+    else continuousRoundRect(size, corner.coerceAtLeast(0f))
     translate(topLeft.x, topLeft.y) { draw(outline) }
 }
 
@@ -1104,8 +1105,55 @@ fun islandShape(corner: Dp, notch: Boolean): RoundedCornerShape =
 /** Форма острова со скруглением из анимации: рамка и стекло читают его при рисовании и обновляются без пересборки. */
 private class AnimatedIslandShape(private val corner: State<Dp>, private val notch: Boolean, private val topRadius: Int) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
-        (if (notch) RoundedCornerShape(topRadius.dp, topRadius.dp, corner.value, corner.value) else RoundedCornerShape(corner.value))
-            .createOutline(size, layoutDirection, density)
+        if (notch) RoundedCornerShape(topRadius.dp, topRadius.dp, corner.value, corner.value).createOutline(size, layoutDirection, density)
+        else continuousRoundRect(size, with(density) { corner.value.toPx() })
+}
+
+/**
+ * Rounded rectangle with iOS-style continuous corners ("squircle"): curvature eases into the straight edge
+ * instead of jumping, as on the real Dynamic Island. The smoothing budget shrinks as the radius nears half the
+ * short side, so a capsule stays a plain pill and only cards with a large radius get the softer corner.
+ */
+internal fun continuousRoundRect(size: Size, radius: Float, smoothing: Float = 0.6f): Outline {
+    val w = size.width
+    val h = size.height
+    val half = minOf(w, h) / 2f
+    val r = radius.coerceIn(0f, half)
+    if (r < 1f) return Outline.Rectangle(androidx.compose.ui.geometry.Rect(0f, 0f, w, h))
+    val xi = smoothing.coerceAtMost(half / r - 1f).coerceAtLeast(0f)
+    val p = (1f + xi) * r
+    val beta = Math.toRadians(45.0 * xi)
+    val theta = Math.toRadians(90.0 * (1.0 - xi))
+    val arc = (kotlin.math.sin(theta / 2) * r * kotlin.math.sqrt(2.0)).toFloat()
+    val c = (r * kotlin.math.tan(beta / 2) * kotlin.math.cos(beta)).toFloat()
+    val d = (c * kotlin.math.tan(beta)).toFloat()
+    val b = (p - arc - c - d) / 3f
+    val a = 2f * b
+    val k = (4.0 / 3.0 * kotlin.math.tan(theta / 4)).toFloat() * r
+    val cb = kotlin.math.cos(beta).toFloat()
+    val sb = kotlin.math.sin(beta).toFloat()
+    val path = androidx.compose.ui.graphics.Path()
+    // One corner in a local frame: x runs along the incoming edge (u), y along the outgoing edge (v)
+    fun corner(sx: Float, sy: Float, ux: Float, uy: Float, vx: Float, vy: Float) {
+        fun x(lx: Float, ly: Float) = sx + lx * ux + ly * vx
+        fun y(lx: Float, ly: Float) = sy + lx * uy + ly * vy
+        path.lineTo(x(0f, 0f), y(0f, 0f))
+        val ax = a + b + c
+        val bx = ax + arc
+        val by = d + arc
+        path.cubicTo(x(a, 0f), y(a, 0f), x(a + b, 0f), y(a + b, 0f), x(ax, d), y(ax, d))
+        path.cubicTo(x(ax + k * cb, d + k * sb), y(ax + k * cb, d + k * sb),
+            x(bx - k * sb, by - k * cb), y(bx - k * sb, by - k * cb), x(bx, by), y(bx, by))
+        path.cubicTo(x(bx + d, by + c), y(bx + d, by + c), x(bx + d, by + b + c), y(bx + d, by + b + c),
+            x(bx + d, by + a + b + c), y(bx + d, by + a + b + c))
+    }
+    path.moveTo(p, 0f)
+    corner(w - p, 0f, 1f, 0f, 0f, 1f)
+    corner(w, h - p, 0f, 1f, -1f, 0f)
+    corner(p, h, -1f, 0f, 0f, -1f)
+    corner(0f, p, 0f, -1f, 1f, 0f)
+    path.close()
+    return Outline.Generic(path)
 }
 
 /** Заливка острова: цвет из «Цвета капсулы» с непрозрачностью из «Оформления». */

@@ -147,6 +147,10 @@ fun EventsScreen(onBack: () -> Unit) {
                 tr("«К терминалу» сразу, как открыли банк или кошелёк, а не только на экране оплаты",
                     "Hold near reader as soon as you open a bank or wallet app, not only on the payment screen"),
                 s.payHintOnOpen, color = Tile.Gray) { set { copy(payHintOnOpen = it) } }
+            GroupToggle(Pos.Middle, Icons.Rounded.Nfc, tr("Любые NFC-приложения", "Any NFC app"),
+                tr("Считать платёжными и транспортные карты, банки и другие приложения с NFC. Выключено — только кошельки",
+                    "Also treat transit cards, banks and other NFC apps as payment apps. Off — wallets only"),
+                s.payAnyNfcApp, color = Tile.Gray) { set { copy(payAnyNfcApp = it) } }
             GroupToggle(Pos.Last, Icons.Rounded.CheckCircle, tr("Оплачено", "Paid"),
                 tr("Галочка и сумма — с экрана кошелька, из уведомления или СМС банка",
                     "A check mark and the amount — from the wallet screen, a notification or a bank SMS"),

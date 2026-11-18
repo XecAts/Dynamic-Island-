@@ -66,6 +66,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -175,7 +178,7 @@ private fun CompactContentBody(act: Act, s: IslandSettings, wideWidth: Dp) {
             val realBattery by IslandBus.battery.collectAsState()
             val battery = if (LocalIslandPreview.current) com.akira.island.core.BatteryInfo(72) else realBattery
             if (s.idleClockBattery) {
-                val now = rememberWallNow(1000)
+                val now = rememberMinuteNow()
                 val context = LocalContext.current
                 CompactRow(s.height.dp, gap, side,
                     left = {
@@ -400,6 +403,41 @@ fun CompactRow(
     }
 }
 
+/**
+ * One-line text for the capsule: waits, slides to its end, waits, then slides back (no loop jump).
+ * The offset is read in the draw phase only, so a frame never recomposes; it sleeps with the screen or a paused track.
+ */
+@Composable
+internal fun PingPongText(text: String, width: Dp, color: Color, fontSize: TextUnit, active: Boolean) {
+    val offset = remember { Animatable(0f) }
+    var textPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var boxPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val overflow = (textPx - boxPx).coerceAtLeast(0)
+    val screenOn by IslandBus.screenOn.collectAsState()
+    LaunchedEffect(text, overflow, active, screenOn) {
+        offset.snapTo(0f)
+        if (overflow <= 0 || !active || !screenOn) return@LaunchedEffect
+        val ms = (overflow * 33).coerceIn(700, 15_000) // about 30 px per second
+        while (true) {
+            kotlinx.coroutines.delay(1_500)
+            offset.animateTo(overflow.toFloat(), tween(ms, easing = LinearEasing))
+            kotlinx.coroutines.delay(1_200)
+            offset.animateTo(0f, tween(ms, easing = LinearEasing))
+        }
+    }
+    Box(
+        Modifier.width(width).clipToBounds().onSizeChanged { boxPx = it.width },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            text, color = color, fontSize = fontSize, maxLines = 1, softWrap = false,
+            modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true)
+                .onSizeChanged { textPx = it.width }
+                .graphicsLayer { translationX = -offset.value },
+        )
+    }
+}
+
 @Composable
 private fun MediaCompact(m: MediaInfo, s: IslandSettings) {
     val h = activeHeight(s)
@@ -408,7 +446,16 @@ private fun MediaCompact(m: MediaInfo, s: IslandSettings) {
     // Новый трек: обложка сменяется плавно, цвет эквалайзера перетекает в цвет новой обложки
     val accent by animateColorAsState(m.accent, tween(400), label = "accent")
     CompactRow(h, compactGap(s), sideMax(s),
-        left = { Crossfade(m.art, animationSpec = tween(300), label = "art") { Art(it, art, art * 0.24f) } },
+        left = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Crossfade(m.art, animationSpec = tween(300), label = "art") { Art(it, art, art * 0.24f) }
+                val label = listOf(m.title, m.artist).filter { it.isNotBlank() }.joinToString(" · ")
+                if (label.isNotEmpty()) {
+                    Spacer(Modifier.width(6.dp))
+                    PingPongText(label, (sideMax(s) - art - 6.dp).coerceIn(40.dp, 76.dp), Color.White.copy(alpha = 0.92f), 11.sp, m.playing)
+                }
+            }
+        },
         right = {
             // Пасхалка: вместо эквалайзера бьётся душа
             if (egg) SoulHeart(Modifier.size(h * 0.5f)) else Equalizer(accent, m.playing, s.liveEqualizer, Modifier.size(h * 0.6f, h * 0.42f))

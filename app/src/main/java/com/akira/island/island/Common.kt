@@ -41,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
@@ -201,6 +202,21 @@ fun rememberWallNow(periodMs: Long, active: Boolean = true): Long {
             if (!IslandBus.screenOn.value) IslandBus.screenOn.first { it }
             now = System.currentTimeMillis()
             delay(periodMs)
+        }
+    }
+    return now
+}
+
+/** Time for a clock without seconds: wakes once a minute, exactly on the minute, and sleeps while the screen is off. */
+@Composable
+fun rememberMinuteNow(): Long {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val screenOn by IslandBus.screenOn.collectAsState()
+    LaunchedEffect(screenOn) {
+        while (screenOn) {
+            val t = System.currentTimeMillis()
+            now = t
+            delay(60_000L - t % 60_000L + 50L)
         }
     }
     return now

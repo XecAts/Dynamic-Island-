@@ -242,6 +242,8 @@ data class IslandSettings(
     val evPayReady: Boolean = true,
     /** «К терминалу» сразу при открытии банка или кошелька, а не только на экране оплаты телефоном */
     val payHintOnOpen: Boolean = false,
+    /** Treat every app that registers an NFC card service (transit, banks, loyalty cards) as a payment app. Off: only real wallets. */
+    val payAnyNfcApp: Boolean = false,
     /** Пришло уведомление об оплате — «Оплачено» с галочкой */
     val evPaySuccess: Boolean = true,
     /** Поставили будильник — плашка со временем подъёма */
@@ -318,7 +320,7 @@ data class IslandSettings(
     /** Полоски эквалайзера пляшут под музыку; выключено — стоят ровно, так экономнее */
     val fxEqualizer: Boolean = true,
     /** Частота кадров эквалайзера и свечения: 60 — плавно и вдвое легче, чем 120 у экрана */
-    val fxRate: FxRate = FxRate.SMOOTH,
+    val fxRate: FxRate = FxRate.ECO,
     /** Мягкое свечение цвета обложки вокруг острова, пока играет музыка */
     val fxGlow: Boolean = false,
     /** Волны NFC вокруг острова, пока ждём терминал, и вспышка с искрами, когда оплата прошла */
@@ -326,7 +328,7 @@ data class IslandSettings(
     /** Капсула вздрагивает при смене режима звука, колокольчик звонящего таймера качается */
     val fxShake: Boolean = true,
     /** В режиме энергосбережения Android остров обходится без живых эффектов. По умолчанию выключено */
-    val batterySaver: Boolean = false,
+    val batterySaver: Boolean = true,
 
     // Жесты
     val tapAction: TapAction = TapAction.EXPAND,

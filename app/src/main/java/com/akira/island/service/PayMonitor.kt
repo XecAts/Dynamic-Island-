@@ -104,7 +104,8 @@ object PayMonitor {
     private var nfcCheckedAt = 0L
 
     /** Умеет ли приложение платить телефоном: Mir Pay, T-Pay, SberPay, Яндекс Пэй и любые другие. */
-    fun isPayApp(context: Context, pkg: String): Boolean = pkg in known || pkg in nfcApps(context)
+    fun isPayApp(context: Context, pkg: String): Boolean =
+        pkg in known || pkg == GMS || (SettingsRepo.current.payAnyNfcApp && pkg in nfcApps(context))
 
     /** Список платёжных приложений меняется редко — спрашиваем систему раз в десять минут. */
     private fun nfcApps(context: Context): Set<String> {

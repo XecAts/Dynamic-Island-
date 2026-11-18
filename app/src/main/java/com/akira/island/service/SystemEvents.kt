@@ -209,7 +209,7 @@ class SystemEvents(private val context: Context) {
         connectionJob = IslandBus.scope.launch {
             combine(SettingsRepo.state, IslandBus.screenOn, IslandBus.powerSave) { settings, screen, saving ->
                 if (screen && (settings.evVpn || settings.evDebugging)) {
-                    if (saving && settings.batterySaver) 10_000L else 2_000L
+                    if (saving && settings.batterySaver) 60_000L else 15_000L
                 } else 0L
             }.distinctUntilChanged().collectLatest { interval ->
                 if (interval > 0) while (active) {
@@ -439,7 +439,10 @@ class SystemEvents(private val context: Context) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastUnlock < 3_000) return
         lastUnlock = now
-        notice(s.evUnlock && !s.faceUnlockOnly, Notice("", null, ic(R.drawable.ios_lock_open), Color.White, style = NoticeStyle.PILL))
+        // Face-only mode needs verified Shizuku events; on OEM builds whose logs differ none arrive, so fall back to the plain unlock icon
+        val faceVerified = s.faceUnlockOnly &&
+            com.akira.island.face.FaceUnlockState.availability.value == com.akira.island.face.FaceAvailability.EVENTS_SEEN
+        notice(s.evUnlock && !faceVerified, Notice("", null, ic(R.drawable.ios_lock_open), Color.White, style = NoticeStyle.PILL))
     }
 
     private fun updateVisibleHeadsetBattery() {
