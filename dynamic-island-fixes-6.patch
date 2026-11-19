@@ -1,0 +1,233 @@
+diff --git a/app/src/main/java/com/akira/island/island/Compact.kt b/app/src/main/java/com/akira/island/island/Compact.kt
+index 0987b4d..a3807db 100644
+--- a/app/src/main/java/com/akira/island/island/Compact.kt
++++ b/app/src/main/java/com/akira/island/island/Compact.kt
+@@ -78,6 +78,8 @@ import androidx.compose.ui.graphics.ImageBitmap
+ import androidx.compose.ui.graphics.TransformOrigin
+ import androidx.compose.ui.graphics.graphicsLayer
+ import androidx.compose.ui.layout.ContentScale
++import androidx.compose.ui.layout.onGloballyPositioned
++import androidx.compose.ui.layout.positionInRoot
+ import androidx.compose.runtime.CompositionLocalProvider
+ import androidx.compose.ui.unit.Density
+ import androidx.compose.ui.platform.LocalDensity
+@@ -638,8 +640,12 @@ private fun Modifier.swipeDownToDismiss(
+ internal fun MessageCard(n: Notice, m: AppMessage, s: IslandSettings, @Suppress("UNUSED_PARAMETER") wideWidth: Dp, detail: Boolean = false, preview: Boolean = false) {
+     val context = LocalContext.current
+     val haptic = rememberHaptic()
+-    val iconSize = 40.dp
++    val iconSize = 48.dp
+     val reply by IslandBus.reply.collectAsState()
++    // Apple layout: no app strip on top; avatar and text start below the camera hole, inside the screen
++    val screenTop = remember { androidx.compose.runtime.mutableStateOf(0.dp) }
++    val statusBar = statusBarHeight()
++    val topSpace = (-screenTop.value).coerceAtLeast(0.dp) + maxOf(12.dp, statusBar + 3.dp - screenTop.value.coerceAtLeast(0.dp))
+     val locked by IslandBus.locked.collectAsState()
+     // На заблокированном телефоне — как в шторке: без кнопок, а скрытые уведомления без имени и текста
+     val hidden = locked && m.sensitive
+@@ -665,6 +671,7 @@ internal fun MessageCard(n: Notice, m: AppMessage, s: IslandSettings, @Suppress(
+ 
+     Column(
+         Modifier
++            .screenTopTracker(screenTop)
+             .swipeDownToDismiss(
+                 scroll = if (detail) scrollState else null,
+                 enabled = detail && dismissible,
+@@ -679,33 +686,7 @@ internal fun MessageCard(n: Notice, m: AppMessage, s: IslandSettings, @Suppress(
+             .then(if (detail) Modifier.verticalScroll(scrollState) else Modifier)
+             .padding(bottom = 12.dp),
+     ) {
+-        // Шапка на уровне камеры: слева приложение, справа время — как боковые части острова iPhone
+-        Row(
+-            Modifier.fillMaxWidth().height(s.height.dp).padding(horizontal = 18.dp),
+-            verticalAlignment = Alignment.CenterVertically,
+-        ) {
+-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+-                if (m.appIcon != null && s.messageIconMode != MessageIconMode.NONE) {
+-                    Image(m.appIcon, null, Modifier.size(15.dp).clip(RoundedCornerShape(4.dp)))
+-                    Spacer(Modifier.width(6.dp))
+-                }
+-                Text(m.appName, color = dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+-            }
+-            Spacer(Modifier.width(compactGap(s)))
+-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+-                Text(tr("сейчас", "now"), color = dim, fontSize = 12.sp, maxLines = 1, softWrap = false)
+-                Spacer(Modifier.width(4.dp))
+-                if (s.messageIconMode != MessageIconMode.NONE) Icon(Ios.bell, null, tint = dim, modifier = Modifier.size(12.dp))
+-                // Кнопка смахнуть/закрыть уведомление — сразу в шапке, чтобы длинное сообщение не заслоняло экран
+-                if (detail && dismissible) {
+-                    Spacer(Modifier.width(8.dp))
+-                    RoundButton(Ios.close, size = 20.dp, iconScale = 0.5f, bg = Color.White.copy(alpha = 0.12f)) {
+-                        NotifListener.dismiss(m.key)
+-                    }
+-                }
+-            }
+-        }
+-        Spacer(Modifier.height((messageTop(s) - s.height.dp).coerceAtLeast(4.dp)))
++        Spacer(Modifier.height(topSpace))
+         // Ниже шапки — крупнее или мельче по «Размеру содержимого»; шапка у камеры остаётся как есть
+         Scaled(s.contentScale) {
+             Column {
+@@ -714,7 +695,7 @@ internal fun MessageCard(n: Notice, m: AppMessage, s: IslandSettings, @Suppress(
+                         NotifIcon(iconMessage, n, iconSize, Color(s.color))
+                     }
+                 }
+-                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.Top) {
++                Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.Top) {
+                     if (showIcon && iconPosition == MessageIconPosition.LEFT) {
+                         NotifIcon(iconMessage, n, iconSize, Color(s.color))
+                         Spacer(Modifier.width(12.dp))
+@@ -722,9 +703,19 @@ internal fun MessageCard(n: Notice, m: AppMessage, s: IslandSettings, @Suppress(
+                     Column(Modifier.weight(1f)) {
+                         Row(Modifier.fillMaxWidth().heightIn(min = 22.dp), verticalAlignment = Alignment.CenterVertically) {
+                             Text(
+-                                if (hidden) m.appName else n.title, color = Color.White, fontSize = 15.sp, lineHeight = 20.sp,
++                                if (hidden) m.appName else n.title, color = Color.White, fontSize = 17.sp, lineHeight = 22.sp,
+                                 fontWeight = FontWeight.SemiBold.island, maxLines = if (detail) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                             )
++                            if (!hidden) {
++                                Spacer(Modifier.width(8.dp))
++                                Text(tr("сейчас", "now"), color = dim, fontSize = 14.sp, maxLines = 1, softWrap = false)
++                            }
++                            if (detail && dismissible) {
++                                Spacer(Modifier.width(8.dp))
++                                RoundButton(Ios.close, size = 22.dp, iconScale = 0.5f, bg = Color.White.copy(alpha = 0.12f)) {
++                                    NotifListener.dismiss(m.key)
++                                }
++                            }
+                             if (m.history.size > 1 && !hidden) {
+                                 Spacer(Modifier.width(8.dp))
+                                 CountPill(m.history.size, open, accent) {
+@@ -745,7 +736,7 @@ internal fun MessageCard(n: Notice, m: AppMessage, s: IslandSettings, @Suppress(
+                             }
+                         } else if (m.text.isNotEmpty()) {
+                             Text(
+-                                m.text, color = Color.White.copy(alpha = 0.88f), fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium.island, maxLines = if (detail) Int.MAX_VALUE else s.msgLines.coerceIn(1, 8),
++                                m.text, color = Color.White.copy(alpha = 0.7f), fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium.island, maxLines = if (detail) Int.MAX_VALUE else s.msgLines.coerceIn(1, 8),
+                                 overflow = TextOverflow.Ellipsis,
+                             )
+                         }
+@@ -908,9 +899,25 @@ fun messageTop(s: IslandSettings): Dp {
+     return maxOf(s.height.dp + 6.dp, status + 24.dp - s.topOffset.dp)
+ }
+ 
++/**
++ * Tracks where this node's top edge sits on the physical screen, in dp. Cards use it to keep their content
++ * inside the screen and below the camera hole, wherever the island window was calibrated to sit.
++ */
++@Composable
++internal fun Modifier.screenTopTracker(out: androidx.compose.runtime.MutableState<Dp>): Modifier {
++    val view = androidx.compose.ui.platform.LocalView.current
++    val density = LocalDensity.current
++    return this.onGloballyPositioned { c ->
++        val loc = IntArray(2)
++        view.getLocationOnScreen(loc)
++        val y = with(density) { (loc[1] + c.positionInRoot().y).toDp() }
++        if (kotlin.math.abs(y.value - out.value.value) > 1f) out.value = y
++    }
++}
++
+ /** Высота строки состояния — из ресурсов системы: окну острова отступы строки состояния не приходят. */
+ @Composable
+-private fun statusBarHeight(): Dp {
++internal fun statusBarHeight(): Dp {
+     val res = LocalContext.current.resources
+     val density = LocalDensity.current
+     return remember(res, density) {
+diff --git a/app/src/main/java/com/akira/island/island/Expanded.kt b/app/src/main/java/com/akira/island/island/Expanded.kt
+index f3c2707..413de6e 100644
+--- a/app/src/main/java/com/akira/island/island/Expanded.kt
++++ b/app/src/main/java/com/akira/island/island/Expanded.kt
+@@ -102,6 +102,7 @@ import androidx.compose.ui.text.style.TextOverflow
+ import androidx.compose.ui.semantics.contentDescription
+ import androidx.compose.ui.semantics.semantics
+ import androidx.compose.ui.unit.Dp
++import androidx.compose.ui.unit.coerceAtLeast
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+ import com.akira.island.core.BatteryInfo
+@@ -151,13 +152,14 @@ private fun ExpandedContentBody(act: Act, s: IslandSettings, lyrics: Lyrics?, ba
+     }
+     // Сверху — полоса камеры: содержимое начинается ниже выреза, чтобы он ничего не закрывал.
+     // Само содержимое — крупнее или мельче по «Размеру содержимого»
+-    Box(Modifier.width(width).heightIn(max = s.expandedMaxHeight.dp)
++    val screenTop = remember { androidx.compose.runtime.mutableStateOf(0.dp) }
++    Box(Modifier.screenTopTracker(screenTop).width(width).heightIn(max = s.expandedMaxHeight.dp)
+         .padding(start = 22.dp, end = 22.dp, top = if (act is Act.MediaA) 0.dp else cameraInset(s), bottom = 20.dp)) {
+         Scaled(s.contentScale) {
+             when (act) {
+                 is Act.HotspotA -> HotspotDetails(act.status)
+                 is Act.WeatherA -> WeatherDetails(act.weather)
+-                is Act.MediaA -> MediaExpanded(act.m, s, lyrics, battery)
++                is Act.MediaA -> MediaExpanded(act.m, s, lyrics, battery, screenTop.value)
+                 is Act.TimerA -> TimerExpanded(act.t, s)
+                 is Act.StopwatchA -> StopwatchExpanded(act.w)
+                 is Act.TorchA -> Unit
+@@ -258,29 +260,35 @@ private fun ago(ms: Long): String {
+  * заливается белым по мере пения; время по краям тонкой полосы и три кнопки посередине.
+  */
+ @Composable
+-private fun MediaExpanded(m: MediaInfo, s: IslandSettings, lyrics: Lyrics?, battery: BatteryInfo) {
++private fun MediaExpanded(m: MediaInfo, s: IslandSettings, lyrics: Lyrics?, battery: BatteryInfo, screenTop: Dp) {
+     val context = LocalContext.current
++    // Apple layout: cover on the left, title and artist to its right, equalizer in the corner. The text starts
++    // below the camera hole and the whole block stays inside the screen even if the island window sits higher.
++    val statusBar = statusBarHeight()
++    val extra = (-screenTop).coerceAtLeast(0.dp)
++    val top = 12.dp + extra
++    val drop = (statusBar + 3.dp - (screenTop.coerceAtLeast(0.dp) + 12.dp)).coerceAtLeast(0.dp)
+     Column {
+-        // Level with the camera: cover on the left, equalizer on the right, exactly as in the compact capsule.
+-        // The card grows out of the capsule and nothing sits in a "forehead" above the sensor.
+-        Row(Modifier.fillMaxWidth().height(s.height.dp), verticalAlignment = Alignment.CenterVertically) {
+-            PlayerArt(m, s, Modifier.clickable { Controls.openApp(context, m.pkg) }, size = 28.dp)
+-            Spacer(Modifier.weight(1f))
+-            if (s.showPlayerBattery && battery.level in 0..100) {
+-                PlayerBattery(battery, percentOnly = true)
+-                Spacer(Modifier.width(10.dp))
++        Row(Modifier.fillMaxWidth().padding(top = top), verticalAlignment = Alignment.Top) {
++            PlayerArt(m, s, Modifier.clickable { Controls.openApp(context, m.pkg) }, size = 56.dp)
++            Spacer(Modifier.width(12.dp))
++            Column(Modifier.weight(1f)) {
++                Spacer(Modifier.height(drop))
++                Text(m.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold.island, maxLines = 1,
++                    modifier = Modifier.fillMaxWidth().marqueeFade().basicMarquee(iterations = Int.MAX_VALUE))
++                if (m.artist.isNotBlank()) {
++                    Spacer(Modifier.height(2.dp))
++                    Text(m.artist, color = Tints.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium.island, maxLines = 1, overflow = TextOverflow.Ellipsis)
++                }
++            }
++            Spacer(Modifier.width(10.dp))
++            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
++                val egg by IslandBus.egg.collectAsState()
++                if (egg) SoulHeart(Modifier.size(24.dp)) else Equalizer(m.accent, m.playing, s.liveEqualizer, Modifier.size(28.dp, 22.dp))
++                if (s.showPlayerBattery && battery.level in 0..100) PlayerBattery(battery, percentOnly = true)
+             }
+-            val egg by IslandBus.egg.collectAsState()
+-            if (egg) SoulHeart(Modifier.size(24.dp)) else Equalizer(m.accent, m.playing, s.liveEqualizer, Modifier.size(28.dp, 22.dp))
+         }
+         Spacer(Modifier.height(8.dp))
+-        Text(m.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold.island, maxLines = 1,
+-            modifier = Modifier.fillMaxWidth().marqueeFade().basicMarquee(iterations = Int.MAX_VALUE))
+-        if (m.artist.isNotBlank()) {
+-            Spacer(Modifier.height(2.dp))
+-            Text(m.artist, color = Tints.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium.island, maxLines = 1, overflow = TextOverflow.Ellipsis)
+-        }
+-        Spacer(Modifier.height(4.dp))
+         MediaTimeline(m, s, lyrics)
+         MediaControls(m.like, m.dislike, m.playing)
+     }
+diff --git a/app/src/main/java/com/akira/island/island/IslandOverlay.kt b/app/src/main/java/com/akira/island/island/IslandOverlay.kt
+index edb824f..b0294ac 100644
+--- a/app/src/main/java/com/akira/island/island/IslandOverlay.kt
++++ b/app/src/main/java/com/akira/island/island/IslandOverlay.kt
+@@ -552,7 +552,8 @@ internal fun IslandBody(
+         expanded && primary is Act.LiveA -> 42.dp
+         expanded -> 44.dp
+         primary is Act.NoticeA && primary.n.style == NoticeStyle.MESSAGE && s.messageStyle == MessageStyle.PILL -> 40.dp
+-        primary is Act.NoticeA && (primary.n.style == NoticeStyle.MESSAGE || primary.n.style == NoticeStyle.EGG) -> 32.dp
++        primary is Act.NoticeA && primary.n.style == NoticeStyle.MESSAGE -> 44.dp
++        primary is Act.NoticeA && primary.n.style == NoticeStyle.EGG -> 32.dp
+         primary is Act.NoticeA && primary.n.style == NoticeStyle.UPDATE -> 36.dp
+         primary is Act.NoticeA && primary.n.style == NoticeStyle.WIDE && primary.n.title.isNotBlank() -> noticeHeight(s) / 2
+         primary is Act.NoticeA && (primary.n.style == NoticeStyle.PAY_DONE ||

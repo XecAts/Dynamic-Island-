@@ -1,0 +1,274 @@
+diff --git a/app/src/main/java/com/akira/island/data/Settings.kt b/app/src/main/java/com/akira/island/data/Settings.kt
+index 4652e78..5bec1e9 100644
+--- a/app/src/main/java/com/akira/island/data/Settings.kt
++++ b/app/src/main/java/com/akira/island/data/Settings.kt
+@@ -242,6 +242,8 @@ data class IslandSettings(
+     val evPayReady: Boolean = true,
+     /** «К терминалу» сразу при открытии банка или кошелька, а не только на экране оплаты телефоном */
+     val payHintOnOpen: Boolean = false,
++    /** Treat every app that registers an NFC card service (transit, banks, loyalty cards) as a payment app. Off: only real wallets. */
++    val payAnyNfcApp: Boolean = false,
+     /** Пришло уведомление об оплате — «Оплачено» с галочкой */
+     val evPaySuccess: Boolean = true,
+     /** Поставили будильник — плашка со временем подъёма */
+@@ -318,7 +320,7 @@ data class IslandSettings(
+     /** Полоски эквалайзера пляшут под музыку; выключено — стоят ровно, так экономнее */
+     val fxEqualizer: Boolean = true,
+     /** Частота кадров эквалайзера и свечения: 60 — плавно и вдвое легче, чем 120 у экрана */
+-    val fxRate: FxRate = FxRate.SMOOTH,
++    val fxRate: FxRate = FxRate.ECO,
+     /** Мягкое свечение цвета обложки вокруг острова, пока играет музыка */
+     val fxGlow: Boolean = false,
+     /** Волны NFC вокруг острова, пока ждём терминал, и вспышка с искрами, когда оплата прошла */
+@@ -326,7 +328,7 @@ data class IslandSettings(
+     /** Капсула вздрагивает при смене режима звука, колокольчик звонящего таймера качается */
+     val fxShake: Boolean = true,
+     /** В режиме энергосбережения Android остров обходится без живых эффектов. По умолчанию выключено */
+-    val batterySaver: Boolean = false,
++    val batterySaver: Boolean = true,
+ 
+     // Жесты
+     val tapAction: TapAction = TapAction.EXPAND,
+diff --git a/app/src/main/java/com/akira/island/island/Common.kt b/app/src/main/java/com/akira/island/island/Common.kt
+index 442e961..2ca06f4 100644
+--- a/app/src/main/java/com/akira/island/island/Common.kt
++++ b/app/src/main/java/com/akira/island/island/Common.kt
+@@ -41,6 +41,7 @@ import androidx.compose.material3.Icon
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.State
++import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableLongStateOf
+ import androidx.compose.runtime.remember
+@@ -206,6 +207,21 @@ fun rememberWallNow(periodMs: Long, active: Boolean = true): Long {
+     return now
+ }
+ 
++/** Time for a clock without seconds: wakes once a minute, exactly on the minute, and sleeps while the screen is off. */
++@Composable
++fun rememberMinuteNow(): Long {
++    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
++    val screenOn by IslandBus.screenOn.collectAsState()
++    LaunchedEffect(screenOn) {
++        while (screenOn) {
++            val t = System.currentTimeMillis()
++            now = t
++            delay(60_000L - t % 60_000L + 50L)
++        }
++    }
++    return now
++}
++
+ @Composable
+ fun rememberHaptic(): () -> Unit {
+     val view = LocalView.current
+diff --git a/app/src/main/java/com/akira/island/island/Compact.kt b/app/src/main/java/com/akira/island/island/Compact.kt
+index 3c9852a..566fd69 100644
+--- a/app/src/main/java/com/akira/island/island/Compact.kt
++++ b/app/src/main/java/com/akira/island/island/Compact.kt
+@@ -66,6 +66,9 @@ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.remember
+ import androidx.compose.ui.Alignment
++import androidx.compose.foundation.layout.wrapContentWidth
++import androidx.compose.ui.draw.clipToBounds
++import androidx.compose.ui.layout.onSizeChanged
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
+ import androidx.compose.ui.draw.scale
+@@ -175,7 +178,7 @@ private fun CompactContentBody(act: Act, s: IslandSettings, wideWidth: Dp) {
+             val realBattery by IslandBus.battery.collectAsState()
+             val battery = if (LocalIslandPreview.current) com.akira.island.core.BatteryInfo(72) else realBattery
+             if (s.idleClockBattery) {
+-                val now = rememberWallNow(1000)
++                val now = rememberMinuteNow()
+                 val context = LocalContext.current
+                 CompactRow(s.height.dp, gap, side,
+                     left = {
+@@ -400,6 +403,41 @@ fun CompactRow(
+     }
+ }
+ 
++/**
++ * One-line text for the capsule: waits, slides to its end, waits, then slides back (no loop jump).
++ * The offset is read in the draw phase only, so a frame never recomposes; it sleeps with the screen or a paused track.
++ */
++@Composable
++internal fun PingPongText(text: String, width: Dp, color: Color, fontSize: TextUnit, active: Boolean) {
++    val offset = remember { Animatable(0f) }
++    var textPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
++    var boxPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
++    val overflow = (textPx - boxPx).coerceAtLeast(0)
++    val screenOn by IslandBus.screenOn.collectAsState()
++    LaunchedEffect(text, overflow, active, screenOn) {
++        offset.snapTo(0f)
++        if (overflow <= 0 || !active || !screenOn) return@LaunchedEffect
++        val ms = (overflow * 33).coerceIn(700, 15_000) // about 30 px per second
++        while (true) {
++            kotlinx.coroutines.delay(1_500)
++            offset.animateTo(overflow.toFloat(), tween(ms, easing = LinearEasing))
++            kotlinx.coroutines.delay(1_200)
++            offset.animateTo(0f, tween(ms, easing = LinearEasing))
++        }
++    }
++    Box(
++        Modifier.width(width).clipToBounds().onSizeChanged { boxPx = it.width },
++        contentAlignment = Alignment.CenterStart,
++    ) {
++        Text(
++            text, color = color, fontSize = fontSize, maxLines = 1, softWrap = false,
++            modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true)
++                .onSizeChanged { textPx = it.width }
++                .graphicsLayer { translationX = -offset.value },
++        )
++    }
++}
++
+ @Composable
+ private fun MediaCompact(m: MediaInfo, s: IslandSettings) {
+     val h = activeHeight(s)
+@@ -408,7 +446,16 @@ private fun MediaCompact(m: MediaInfo, s: IslandSettings) {
+     // Новый трек: обложка сменяется плавно, цвет эквалайзера перетекает в цвет новой обложки
+     val accent by animateColorAsState(m.accent, tween(400), label = "accent")
+     CompactRow(h, compactGap(s), sideMax(s),
+-        left = { Crossfade(m.art, animationSpec = tween(300), label = "art") { Art(it, art, art * 0.24f) } },
++        left = {
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Crossfade(m.art, animationSpec = tween(300), label = "art") { Art(it, art, art * 0.24f) }
++                val label = listOf(m.title, m.artist).filter { it.isNotBlank() }.joinToString(" · ")
++                if (label.isNotEmpty()) {
++                    Spacer(Modifier.width(6.dp))
++                    PingPongText(label, (sideMax(s) - art - 6.dp).coerceIn(40.dp, 76.dp), Color.White.copy(alpha = 0.92f), 11.sp, m.playing)
++                }
++            }
++        },
+         right = {
+             // Пасхалка: вместо эквалайзера бьётся душа
+             if (egg) SoulHeart(Modifier.size(h * 0.5f)) else Equalizer(accent, m.playing, s.liveEqualizer, Modifier.size(h * 0.6f, h * 0.42f))
+diff --git a/app/src/main/java/com/akira/island/island/IslandOverlay.kt b/app/src/main/java/com/akira/island/island/IslandOverlay.kt
+index 1ee1e75..edb824f 100644
+--- a/app/src/main/java/com/akira/island/island/IslandOverlay.kt
++++ b/app/src/main/java/com/akira/island/island/IslandOverlay.kt
+@@ -1069,7 +1069,8 @@ fun DrawScope.islandGlow(color: Color, alpha: Float, corner: Float, notch: Boole
+ 
+ /** Контур формы острова со скруглением [corner] в [topLeft] — для свечения, волн и кромки вокруг него. */
+ private fun DrawScope.islandOutline(topLeft: Offset, size: Size, corner: Float, notch: Boolean, draw: DrawScope.(Outline) -> Unit) {
+-    val outline = islandShape(corner.coerceAtLeast(0f).toDp(), notch).createOutline(size, layoutDirection, this)
++    val outline = if (notch) islandShape(corner.coerceAtLeast(0f).toDp(), notch).createOutline(size, layoutDirection, this)
++    else continuousRoundRect(size, corner.coerceAtLeast(0f))
+     translate(topLeft.x, topLeft.y) { draw(outline) }
+ }
+ 
+@@ -1104,8 +1105,55 @@ fun islandShape(corner: Dp, notch: Boolean): RoundedCornerShape =
+ /** Форма острова со скруглением из анимации: рамка и стекло читают его при рисовании и обновляются без пересборки. */
+ private class AnimatedIslandShape(private val corner: State<Dp>, private val notch: Boolean, private val topRadius: Int) : Shape {
+     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+-        (if (notch) RoundedCornerShape(topRadius.dp, topRadius.dp, corner.value, corner.value) else RoundedCornerShape(corner.value))
+-            .createOutline(size, layoutDirection, density)
++        if (notch) RoundedCornerShape(topRadius.dp, topRadius.dp, corner.value, corner.value).createOutline(size, layoutDirection, density)
++        else continuousRoundRect(size, with(density) { corner.value.toPx() })
++}
++
++/**
++ * Rounded rectangle with iOS-style continuous corners ("squircle"): curvature eases into the straight edge
++ * instead of jumping, as on the real Dynamic Island. The smoothing budget shrinks as the radius nears half the
++ * short side, so a capsule stays a plain pill and only cards with a large radius get the softer corner.
++ */
++internal fun continuousRoundRect(size: Size, radius: Float, smoothing: Float = 0.6f): Outline {
++    val w = size.width
++    val h = size.height
++    val half = minOf(w, h) / 2f
++    val r = radius.coerceIn(0f, half)
++    if (r < 1f) return Outline.Rectangle(androidx.compose.ui.geometry.Rect(0f, 0f, w, h))
++    val xi = smoothing.coerceAtMost(half / r - 1f).coerceAtLeast(0f)
++    val p = (1f + xi) * r
++    val beta = Math.toRadians(45.0 * xi)
++    val theta = Math.toRadians(90.0 * (1.0 - xi))
++    val arc = (kotlin.math.sin(theta / 2) * r * kotlin.math.sqrt(2.0)).toFloat()
++    val c = (r * kotlin.math.tan(beta / 2) * kotlin.math.cos(beta)).toFloat()
++    val d = (c * kotlin.math.tan(beta)).toFloat()
++    val b = (p - arc - c - d) / 3f
++    val a = 2f * b
++    val k = (4.0 / 3.0 * kotlin.math.tan(theta / 4)).toFloat() * r
++    val cb = kotlin.math.cos(beta).toFloat()
++    val sb = kotlin.math.sin(beta).toFloat()
++    val path = androidx.compose.ui.graphics.Path()
++    // One corner in a local frame: x runs along the incoming edge (u), y along the outgoing edge (v)
++    fun corner(sx: Float, sy: Float, ux: Float, uy: Float, vx: Float, vy: Float) {
++        fun x(lx: Float, ly: Float) = sx + lx * ux + ly * vx
++        fun y(lx: Float, ly: Float) = sy + lx * uy + ly * vy
++        path.lineTo(x(0f, 0f), y(0f, 0f))
++        val ax = a + b + c
++        val bx = ax + arc
++        val by = d + arc
++        path.cubicTo(x(a, 0f), y(a, 0f), x(a + b, 0f), y(a + b, 0f), x(ax, d), y(ax, d))
++        path.cubicTo(x(ax + k * cb, d + k * sb), y(ax + k * cb, d + k * sb),
++            x(bx - k * sb, by - k * cb), y(bx - k * sb, by - k * cb), x(bx, by), y(bx, by))
++        path.cubicTo(x(bx + d, by + c), y(bx + d, by + c), x(bx + d, by + b + c), y(bx + d, by + b + c),
++            x(bx + d, by + a + b + c), y(bx + d, by + a + b + c))
++    }
++    path.moveTo(p, 0f)
++    corner(w - p, 0f, 1f, 0f, 0f, 1f)
++    corner(w, h - p, 0f, 1f, -1f, 0f)
++    corner(p, h, -1f, 0f, 0f, -1f)
++    corner(0f, p, 0f, -1f, 1f, 0f)
++    path.close()
++    return Outline.Generic(path)
+ }
+ 
+ /** Заливка острова: цвет из «Цвета капсулы» с непрозрачностью из «Оформления». */
+diff --git a/app/src/main/java/com/akira/island/service/PayMonitor.kt b/app/src/main/java/com/akira/island/service/PayMonitor.kt
+index 242bffd..e3cbb03 100644
+--- a/app/src/main/java/com/akira/island/service/PayMonitor.kt
++++ b/app/src/main/java/com/akira/island/service/PayMonitor.kt
+@@ -104,7 +104,8 @@ object PayMonitor {
+     private var nfcCheckedAt = 0L
+ 
+     /** Умеет ли приложение платить телефоном: Mir Pay, T-Pay, SberPay, Яндекс Пэй и любые другие. */
+-    fun isPayApp(context: Context, pkg: String): Boolean = pkg in known || pkg in nfcApps(context)
++    fun isPayApp(context: Context, pkg: String): Boolean =
++        pkg in known || pkg == GMS || (SettingsRepo.current.payAnyNfcApp && pkg in nfcApps(context))
+ 
+     /** Список платёжных приложений меняется редко — спрашиваем систему раз в десять минут. */
+     private fun nfcApps(context: Context): Set<String> {
+diff --git a/app/src/main/java/com/akira/island/service/SystemEvents.kt b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+index 17a13b2..d3dcf84 100644
+--- a/app/src/main/java/com/akira/island/service/SystemEvents.kt
++++ b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+@@ -209,7 +209,7 @@ class SystemEvents(private val context: Context) {
+         connectionJob = IslandBus.scope.launch {
+             combine(SettingsRepo.state, IslandBus.screenOn, IslandBus.powerSave) { settings, screen, saving ->
+                 if (screen && (settings.evVpn || settings.evDebugging)) {
+-                    if (saving && settings.batterySaver) 10_000L else 2_000L
++                    if (saving && settings.batterySaver) 60_000L else 15_000L
+                 } else 0L
+             }.distinctUntilChanged().collectLatest { interval ->
+                 if (interval > 0) while (active) {
+@@ -439,7 +439,10 @@ class SystemEvents(private val context: Context) {
+         val now = SystemClock.elapsedRealtime()
+         if (now - lastUnlock < 3_000) return
+         lastUnlock = now
+-        notice(s.evUnlock && !s.faceUnlockOnly, Notice("", null, ic(R.drawable.ios_lock_open), Color.White, style = NoticeStyle.PILL))
++        // Face-only mode needs verified Shizuku events; on OEM builds whose logs differ none arrive, so fall back to the plain unlock icon
++        val faceVerified = s.faceUnlockOnly &&
++            com.akira.island.face.FaceUnlockState.availability.value == com.akira.island.face.FaceAvailability.EVENTS_SEEN
++        notice(s.evUnlock && !faceVerified, Notice("", null, ic(R.drawable.ios_lock_open), Color.White, style = NoticeStyle.PILL))
+     }
+ 
+     private fun updateVisibleHeadsetBattery() {
+diff --git a/app/src/main/java/com/akira/island/ui/screens/EventsScreen.kt b/app/src/main/java/com/akira/island/ui/screens/EventsScreen.kt
+index cc9aecf..c6f4f3e 100644
+--- a/app/src/main/java/com/akira/island/ui/screens/EventsScreen.kt
++++ b/app/src/main/java/com/akira/island/ui/screens/EventsScreen.kt
+@@ -147,6 +147,10 @@ fun EventsScreen(onBack: () -> Unit) {
+                 tr("«К терминалу» сразу, как открыли банк или кошелёк, а не только на экране оплаты",
+                     "Hold near reader as soon as you open a bank or wallet app, not only on the payment screen"),
+                 s.payHintOnOpen, color = Tile.Gray) { set { copy(payHintOnOpen = it) } }
++            GroupToggle(Pos.Middle, Icons.Rounded.Nfc, tr("Любые NFC-приложения", "Any NFC app"),
++                tr("Считать платёжными и транспортные карты, банки и другие приложения с NFC. Выключено — только кошельки",
++                    "Also treat transit cards, banks and other NFC apps as payment apps. Off — wallets only"),
++                s.payAnyNfcApp, color = Tile.Gray) { set { copy(payAnyNfcApp = it) } }
+             GroupToggle(Pos.Last, Icons.Rounded.CheckCircle, tr("Оплачено", "Paid"),
+                 tr("Галочка и сумма — с экрана кошелька, из уведомления или СМС банка",
+                     "A check mark and the amount — from the wallet screen, a notification or a bank SMS"),

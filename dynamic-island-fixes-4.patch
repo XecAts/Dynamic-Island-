@@ -1,0 +1,125 @@
+diff --git a/app/src/main/java/com/akira/island/core/IslandBus.kt b/app/src/main/java/com/akira/island/core/IslandBus.kt
+index 6cd0fc1..b316b76 100644
+--- a/app/src/main/java/com/akira/island/core/IslandBus.kt
++++ b/app/src/main/java/com/akira/island/core/IslandBus.kt
+@@ -91,7 +91,8 @@ object IslandBus {
+     @Volatile
+     var lastTouch = 0L
+ 
+-    private data class QueuedNotice(val notice: Notice, val revision: Long)
++    private data class QueuedNotice(val notice: Notice, val revision: Long, val seq: Long = 0L)
++    private val replaceSeq = java.util.concurrent.ConcurrentHashMap<String, Long>()
+     // A burst of messages should not disappear behind a single long-lived card.
+     private val queue = Channel<QueuedNotice>(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+     private val messageRevisions = object : LinkedHashMap<String, Long>(128, 0.75f, true) {
+@@ -104,18 +105,22 @@ object IslandBus {
+                 val n = queued.notice
+                 val key = n.message?.key
+                 fun removed() = key != null && (messageRevisions[key] ?: 0L) != queued.revision
+-                if (removed()) continue
++                val rk = n.replaceKey
++                fun superseded() = rk != null && (replaceSeq[rk] ?: 0L) != queued.seq
++                if (removed() || superseded()) continue
+                 val s = SettingsRepo.current
+                 // «Задержка появления»; подтверждения того, что вы только что сделали (отправлено, оплачено), — сразу
+-                if (s.noticeDelayMs > 0 && n.style != NoticeStyle.SENT && n.style != NoticeStyle.PAY_DONE) delay(s.noticeDelayMs.toLong())
+-                if (removed()) continue
++                if (s.noticeDelayMs > 0 && rk == null && n.style != NoticeStyle.SENT && n.style != NoticeStyle.PAY_DONE) delay(s.noticeDelayMs.toLong())
++                if (removed() || superseded()) continue
+                 messageDetail.value = false
+                 noticeHold.value = false
+                 notice.value = n
+                 val message = n.style == NoticeStyle.MESSAGE
+                 val duration = if (message && s.messageSeconds > 0) s.messageSeconds * 1000L else s.noticeDurationMs + n.extraMs
+                 // Уведомление уходит по времени или раньше, если его смахнули кликом
+-                withTimeoutOrNull(duration) { notice.first { it?.id != n.id } }
++                // A newer event with the same key ends this one at once and takes its place without collapsing the island
++                withTimeoutOrNull(duration) { combine(notice, posted) { cur, _ -> cur?.id != n.id || superseded() }.first { it } }
++                val replaced = superseded()
+                 // «Пока не смахнёте»: плашка ждёт, пока её не уберут; пришло следующее событие — уступает ему
+                 if (message && s.messageSeconds < 0 && notice.value?.id == n.id && waitingIsEmpty()) {
+                     val seen = posted.value
+@@ -126,9 +131,9 @@ object IslandBus {
+                     combine(notice, noticeHold) { current, holding -> current?.id != n.id || !holding }.first { it }
+                     if (notice.value?.id == n.id) withTimeoutOrNull(1500) { notice.first { it?.id != n.id } }
+                 }
+-                if (notice.value?.id == n.id) notice.value = null
++                if (notice.value?.id == n.id && !replaced) notice.value = null
+                 // Короткая пауза между плашками, чтобы они не слипались, — но без заметного ожидания
+-                delay(110)
++                if (!replaced) delay(110)
+             }
+         }
+     }
+@@ -137,7 +142,8 @@ object IslandBus {
+     private val posted = MutableStateFlow(0)
+ 
+     fun post(n: Notice) {
+-        queue.trySend(QueuedNotice(n, n.message?.key?.let { messageRevisions[it] } ?: 0L))
++        val seq = n.replaceKey?.let { key -> replaceSeq.merge(key, 1L, Long::plus) ?: 0L } ?: 0L
++        queue.trySend(QueuedNotice(n, n.message?.key?.let { messageRevisions[it] } ?: 0L, seq))
+         posted.value++
+     }
+ 
+diff --git a/app/src/main/java/com/akira/island/core/Models.kt b/app/src/main/java/com/akira/island/core/Models.kt
+index fe8e6c9..6adb763 100644
+--- a/app/src/main/java/com/akira/island/core/Models.kt
++++ b/app/src/main/java/com/akira/island/core/Models.kt
+@@ -316,6 +316,8 @@ data class Notice(
+     val alarm: AlarmInfo? = null,
+     /** Новая версия для плашки NoticeStyle.UPDATE; null — уже обновились */
+     val update: com.akira.island.update.Release? = null,
++    /** Events with the same key replace each other in place (ringer mode, DND): the newest one shows at once, no queue */
++    val replaceKey: String? = null,
+     val id: Long = ids.incrementAndGet(),
+ ) {
+     private companion object {
+diff --git a/app/src/main/java/com/akira/island/island/Compact.kt b/app/src/main/java/com/akira/island/island/Compact.kt
+index 568f3bb..6d11bd2 100644
+--- a/app/src/main/java/com/akira/island/island/Compact.kt
++++ b/app/src/main/java/com/akira/island/island/Compact.kt
+@@ -367,6 +367,7 @@ fun CompactRow(
+     left: @Composable BoxScope.() -> Unit,
+     right: @Composable BoxScope.() -> Unit,
+     shrink: Boolean = true,
++    minWidth: Dp = 0.dp,
+ ) {
+     // Капсула с активностью шире спокойной на «Ширину с активностью»; длинный текст раздвинет её сам
+     val st = SettingsRepo.state.collectAsState().value
+@@ -395,7 +396,7 @@ fun CompactRow(
+             }.first().measure(loose)
+         }
+         val needed = 2 * (pad + maxOf(l.width, r.width)) + gapPx
+-        val w = maxOf(needed, base)
++        val w = maxOf(needed, base, minWidth.roundToPx())
+         layout(w, hPx) {
+             l.place(pad, (hPx - l.height) / 2)
+             r.place(w - pad - r.width, (hPx - r.height) / 2)
+@@ -569,6 +570,8 @@ private fun PillNotice(n: Notice, s: IslandSettings) {
+         },
+         // Как в ролике: подпись в полный размер, пилюля для неё чуть шире
+         shrink = false,
++        // Like the iPhone ringer switch: the island widens for the event even on top of music or navigation
++        minWidth = expandedWidth(androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp, s) * 0.6f,
+     )
+ }
+ 
+diff --git a/app/src/main/java/com/akira/island/service/SystemEvents.kt b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+index d3dcf84..fedb99c 100644
+--- a/app/src/main/java/com/akira/island/service/SystemEvents.kt
++++ b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+@@ -348,11 +348,11 @@ class SystemEvents(private val context: Context) {
+                 if (mode >= 0) IslandBus.ringer.value = mode
+                 val n = when (mode) {
+                     // Как переключатель «Звонок/Бесшумно» на iPhone: короткая пилюля, колокольчик качается
+-                    AudioManager.RINGER_MODE_NORMAL -> Notice("", tr("Звонок", "Ring"), ic(R.drawable.ios_notifications), Color.White, style = NoticeStyle.PILL)
++                    AudioManager.RINGER_MODE_NORMAL -> Notice("", tr("Звонок", "Ring"), ic(R.drawable.ios_notifications), Color.White, style = NoticeStyle.PILL, replaceKey = "ringer")
+                     AudioManager.RINGER_MODE_VIBRATE -> Notice("", tr("Вибрация", "Vibrate"), ic(R.drawable.ios_phone_portrait),
+-                        Tints.Purple, style = NoticeStyle.PILL)
++                        Tints.Purple, style = NoticeStyle.PILL, replaceKey = "ringer")
+                     AudioManager.RINGER_MODE_SILENT -> Notice("", tr("Без звука", "Silent"), ic(R.drawable.ios_notifications_off),
+-                        Tints.Red, style = NoticeStyle.PILL)
++                        Tints.Red, style = NoticeStyle.PILL, replaceKey = "ringer")
+                     else -> null
+                 }
+                 if (n != null) notice(s.evRinger, n)

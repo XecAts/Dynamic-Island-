@@ -1,0 +1,104 @@
+diff --git a/app/src/main/java/com/akira/island/service/SystemEventObservation.kt b/app/src/main/java/com/akira/island/service/SystemEventObservation.kt
+index a34d1e5..54f59e9 100644
+--- a/app/src/main/java/com/akira/island/service/SystemEventObservation.kt
++++ b/app/src/main/java/com/akira/island/service/SystemEventObservation.kt
+@@ -44,5 +44,5 @@ enum class ConnectionEvent {
+         WIRELESS_DEBUG -> Icons.Rounded.Adb
+     }
+     fun notice(on: Boolean) = Notice(title, if (on) tr("Вкл", "On") else tr("Выкл", "Off"), icon,
+-        if (!on) Tints.Gray else if (this == VPN || this == HOTSPOT) Tints.Blue else Tints.Teal)
++        if (!on) Tints.Gray else if (this == VPN || this == HOTSPOT) Tints.Blue else Tints.Teal, replaceKey = name)
+ }
+diff --git a/app/src/main/java/com/akira/island/service/SystemEvents.kt b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+index fedb99c..258805b 100644
+--- a/app/src/main/java/com/akira/island/service/SystemEvents.kt
++++ b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+@@ -102,14 +102,14 @@ class SystemEvents(private val context: Context) {
+             main.post {
+                 val wasEmpty = wifiNetworks.isEmpty()
+                 wifiNetworks += network
+-                if (wasEmpty) notice(s.evWifiOn, Notice("Wi-Fi", tr("Подключён", "Connected"), ic(R.drawable.ios_wifi), Tints.Blue))
++                if (wasEmpty) notice(s.evWifiOn, Notice("Wi-Fi", tr("Подключён", "Connected"), ic(R.drawable.ios_wifi), Tints.Blue, replaceKey = "wifi"))
+             }
+         }
+ 
+         override fun onLost(network: Network) {
+             main.post {
+                 if (wifiNetworks.remove(network) && wifiNetworks.isEmpty()) {
+-                    notice(s.evWifiOff, Notice("Wi-Fi", tr("Отключён", "Disconnected"), ic(R.drawable.ios_wifi), Tints.Gray))
++                    notice(s.evWifiOff, Notice("Wi-Fi", tr("Отключён", "Disconnected"), ic(R.drawable.ios_wifi), Tints.Gray, replaceKey = "wifi"))
+                 }
+             }
+         }
+@@ -155,7 +155,7 @@ class SystemEvents(private val context: Context) {
+                     tr("Яркость", "Brightness"),
+                     if (auto) tr("Авто", "Auto") else tr("Вручную", "Manual"),
+                     if (auto) ic(R.drawable.ios_sunny) else ic(R.drawable.ios_contrast),
+-                    Tints.Yellow,
++                    Tints.Yellow, replaceKey = "brightness",
+                 ),
+             )
+         }
+@@ -284,7 +284,7 @@ class SystemEvents(private val context: Context) {
+                 notice(
+                     s.evChargeStart,
+                     Notice(tr("Зарядка", "Charging"), if (level >= 0) "$level%" else null, ic(R.drawable.ios_flash), Tints.Green,
+-                        battery = level.takeIf { it >= 0 }),
++                        battery = level.takeIf { it >= 0 }, replaceKey = "power"),
+                 )
+             }
+ 
+@@ -295,7 +295,7 @@ class SystemEvents(private val context: Context) {
+                 notice(
+                     s.evChargeStop,
+                     Notice(tr("Отключено", "Unplugged"), if (level >= 0) "$level%" else null, ic(R.drawable.ios_battery_full), Tints.Orange,
+-                        battery = level.takeIf { it >= 0 }),
++                        battery = level.takeIf { it >= 0 }, replaceKey = "power"),
+                 )
+             }
+ 
+@@ -333,14 +333,14 @@ class SystemEvents(private val context: Context) {
+                 notice(
+                     s.evDnd,
+                     Notice(tr("Не беспокоить", "Do Not Disturb"), if (on) tr("Вкл", "On") else tr("Выкл", "Off"), ic(R.drawable.ios_moon),
+-                        if (on) Tints.Purple else Tints.Gray),
++                        if (on) Tints.Purple else Tints.Gray, replaceKey = "dnd"),
+                 )
+             }
+ 
+             Intent.ACTION_AIRPLANE_MODE_CHANGED -> {
+                 val on = intent.getBooleanExtra("state", false)
+-                if (on) notice(s.evAirplaneOn, Notice(tr("Режим полёта", "Airplane Mode"), tr("Вкл", "On"), ic(R.drawable.ios_airplane), Tints.Orange))
+-                else notice(s.evAirplaneOff, Notice(tr("Режим полёта", "Airplane Mode"), tr("Выкл", "Off"), ic(R.drawable.ios_airplane), Tints.Gray))
++                if (on) notice(s.evAirplaneOn, Notice(tr("Режим полёта", "Airplane Mode"), tr("Вкл", "On"), ic(R.drawable.ios_airplane), Tints.Orange, replaceKey = "airplane"))
++                else notice(s.evAirplaneOff, Notice(tr("Режим полёта", "Airplane Mode"), tr("Выкл", "Off"), ic(R.drawable.ios_airplane), Tints.Gray, replaceKey = "airplane"))
+             }
+ 
+             AudioManager.RINGER_MODE_CHANGED_ACTION -> {
+@@ -401,13 +401,13 @@ class SystemEvents(private val context: Context) {
+             UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                 val dev = IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                 notice(s.evUsbOn, Notice(dev?.productName ?: tr("USB-устройство", "USB device"), tr("Подключено", "Connected"),
+-                    ic(R.drawable.ios_hardware_chip), Tints.Teal))
++                    ic(R.drawable.ios_hardware_chip), Tints.Teal, replaceKey = "usb"))
+             }
+ 
+             UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                 val dev = IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                 notice(s.evUsbOff, Notice(dev?.productName ?: tr("USB-устройство", "USB device"), tr("Отключено", "Disconnected"),
+-                    ic(R.drawable.ios_hardware_chip), Tints.Gray))
++                    ic(R.drawable.ios_hardware_chip), Tints.Gray, replaceKey = "usb"))
+             }
+ 
+             USB_STATE -> {
+@@ -419,8 +419,8 @@ class SystemEvents(private val context: Context) {
+                 // системы не определён, поэтому смотрим чуть позже, менялась ли зарядка рядом по времени
+                 main.postDelayed({
+                     if (abs(SystemClock.elapsedRealtime() - lastPowerChange) < 3000) return@postDelayed
+-                    if (connected) notice(s.evUsbOn, Notice("USB", tr("Подключено", "Connected"), ic(R.drawable.ios_hardware_chip), Tints.Teal))
+-                    else notice(s.evUsbOff, Notice("USB", tr("Отключено", "Disconnected"), ic(R.drawable.ios_hardware_chip), Tints.Gray))
++                    if (connected) notice(s.evUsbOn, Notice("USB", tr("Подключено", "Connected"), ic(R.drawable.ios_hardware_chip), Tints.Teal, replaceKey = "usb"))
++                    else notice(s.evUsbOff, Notice("USB", tr("Отключено", "Disconnected"), ic(R.drawable.ios_hardware_chip), Tints.Gray, replaceKey = "usb"))
+                 }, 1500)
+             }
+         }

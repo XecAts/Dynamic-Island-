@@ -1,0 +1,69 @@
+diff --git a/app/src/main/java/com/akira/island/island/Compact.kt b/app/src/main/java/com/akira/island/island/Compact.kt
+index 566fd69..7bf89e9 100644
+--- a/app/src/main/java/com/akira/island/island/Compact.kt
++++ b/app/src/main/java/com/akira/island/island/Compact.kt
+@@ -408,7 +408,7 @@ fun CompactRow(
+  * The offset is read in the draw phase only, so a frame never recomposes; it sleeps with the screen or a paused track.
+  */
+ @Composable
+-internal fun PingPongText(text: String, width: Dp, color: Color, fontSize: TextUnit, active: Boolean) {
++internal fun PingPongText(text: androidx.compose.ui.text.AnnotatedString, modifier: Modifier, fontSize: TextUnit, active: Boolean) {
+     val offset = remember { Animatable(0f) }
+     var textPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+     var boxPx by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+@@ -426,11 +426,11 @@ internal fun PingPongText(text: String, width: Dp, color: Color, fontSize: TextU
+         }
+     }
+     Box(
+-        Modifier.width(width).clipToBounds().onSizeChanged { boxPx = it.width },
++        modifier.clipToBounds().onSizeChanged { boxPx = it.width },
+         contentAlignment = Alignment.CenterStart,
+     ) {
+         Text(
+-            text, color = color, fontSize = fontSize, maxLines = 1, softWrap = false,
++            text, color = Color.White, fontSize = fontSize, maxLines = 1, softWrap = false,
+             modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true)
+                 .onSizeChanged { textPx = it.width }
+                 .graphicsLayer { translationX = -offset.value },
+@@ -445,22 +445,25 @@ private fun MediaCompact(m: MediaInfo, s: IslandSettings) {
+     val egg by IslandBus.egg.collectAsState()
+     // Новый трек: обложка сменяется плавно, цвет эквалайзера перетекает в цвет новой обложки
+     val accent by animateColorAsState(m.accent, tween(400), label = "accent")
+-    CompactRow(h, compactGap(s), sideMax(s),
+-        left = {
+-            Row(verticalAlignment = Alignment.CenterVertically) {
+-                Crossfade(m.art, animationSpec = tween(300), label = "art") { Art(it, art, art * 0.24f) }
+-                val label = listOf(m.title, m.artist).filter { it.isNotBlank() }.joinToString(" · ")
+-                if (label.isNotEmpty()) {
+-                    Spacer(Modifier.width(6.dp))
+-                    PingPongText(label, (sideMax(s) - art - 6.dp).coerceIn(40.dp, 76.dp), Color.White.copy(alpha = 0.92f), 11.sp, m.playing)
+-                }
+-            }
+-        },
+-        right = {
+-            // Пасхалка: вместо эквалайзера бьётся душа
+-            if (egg) SoulHeart(Modifier.size(h * 0.5f)) else Equalizer(accent, m.playing, s.liveEqualizer, Modifier.size(h * 0.6f, h * 0.42f))
+-        },
+-    )
++    // Whole island is the player strip: cover on the left, equalizer on the right, the title runs across everything between
++    val screenDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp
++    val wide = (expandedWidth(screenDp, s) * 0.82f).coerceAtLeast((s.width + s.activeWidth).dp)
++    val title = m.title.ifBlank { m.artist }
++    val label = androidx.compose.ui.text.buildAnnotatedString {
++        withStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)) { append(title) }
++        if (m.title.isNotBlank() && m.artist.isNotBlank()) {
++            append("  \u00B7  ")
++            withStyle(androidx.compose.ui.text.SpanStyle(color = Color.White.copy(alpha = 0.6f))) { append(m.artist) }
++        }
++    }
++    Row(Modifier.width(wide).height(h).padding(horizontal = h * 0.3f), verticalAlignment = Alignment.CenterVertically) {
++        Crossfade(m.art, animationSpec = tween(300), label = "art") { Art(it, art, art * 0.24f) }
++        Spacer(Modifier.width(10.dp))
++        if (label.text.isNotBlank()) PingPongText(label, Modifier.weight(1f), 15.sp, m.playing) else Spacer(Modifier.weight(1f))
++        Spacer(Modifier.width(10.dp))
++        // Пасхалка: вместо эквалайзера бьётся душа
++        if (egg) SoulHeart(Modifier.size(h * 0.5f)) else Equalizer(accent, m.playing, s.liveEqualizer, Modifier.size(h * 0.6f, h * 0.42f))
++    }
+ }
+ 
+ /**
