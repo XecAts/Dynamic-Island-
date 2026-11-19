@@ -1,0 +1,531 @@
+diff -ruN a/app/src/main/java/com/akira/island/core/Controls.kt b/app/src/main/java/com/akira/island/core/Controls.kt
+--- a/app/src/main/java/com/akira/island/core/Controls.kt	2026-11-19 13:18:00.900353098 +0300
++++ b/app/src/main/java/com/akira/island/core/Controls.kt	2026-11-19 13:18:00.910736302 +0300
+@@ -51,12 +51,27 @@
+         else c.transportControls.play()
+     }
+ 
+-    fun next() {
+-        mediaController?.transportControls?.skipToNext()
+-    }
++    fun next() = skip(android.view.KeyEvent.KEYCODE_MEDIA_NEXT, forward = true)
++
++    fun prev() = skip(android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS, forward = false)
+ 
+-    fun prev() {
+-        mediaController?.transportControls?.skipToPrevious()
++    /**
++     * Many players ignore skipToNext()/skipToPrevious() and only react to the media button; send the key as
++     * well when the transport call is not offered by the session (or is not available at all).
++     */
++    private fun skip(keyCode: Int, forward: Boolean) {
++        val c = mediaController ?: return
++        val wanted = if (forward) PlaybackState.ACTION_SKIP_TO_NEXT else PlaybackState.ACTION_SKIP_TO_PREVIOUS
++        val offered = (c.playbackState?.actions ?: 0L) and wanted != 0L
++        val viaTransport = offered && runCatching {
++            if (forward) c.transportControls.skipToNext() else c.transportControls.skipToPrevious()
++        }.isSuccess
++        if (viaTransport) return
++        val now = SystemClock.uptimeMillis()
++        runCatching {
++            c.dispatchMediaButtonEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, keyCode, 0))
++            c.dispatchMediaButtonEvent(android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_UP, keyCode, 0))
++        }
+     }
+ 
+     fun seekTo(ms: Long) {
+diff -ruN a/app/src/main/java/com/akira/island/island/Compact.kt b/app/src/main/java/com/akira/island/island/Compact.kt
+--- a/app/src/main/java/com/akira/island/island/Compact.kt	2026-11-19 13:18:00.902305589 +0300
++++ b/app/src/main/java/com/akira/island/island/Compact.kt	2026-11-19 13:18:00.912068518 +0300
+@@ -817,18 +817,19 @@
+                         }
+                     }
+                 } else if (preview && s.msgActions) {
+-                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+-                        TextAction(tr("Ответить", "Reply"), accent) {}
+-                        TextAction(tr("Пометить прочитанным", "Mark as read"), accent) {}
++                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
++                        PillAction(tr("Ответить", "Reply"), false, Modifier.weight(1f)) {}
++                        PillAction(tr("Пометить прочитанным", "Mark as read"), true, Modifier.weight(1f)) {}
+                     }
+                 } else if (m.actions.isNotEmpty() && !locked) {
+                     // Полные подписи; при крупном шрифте следующая кнопка переходит на новую строку.
+-                    FlowRow(
+-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 4.dp),
+-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
++                    // Two pill buttons like on iOS: gray "Reply", blue-tinted "Mark as read" (the second action)
++                    Row(
++                        Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 6.dp, bottom = 2.dp),
++                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                     ) {
+                         m.actions.forEach { a ->
+-                            TextAction(a.title, accent, size = 14.sp) {
++                            PillAction(a.title, !a.isReply, Modifier.weight(1f)) {
+                                 if (a.isReply) {
+                                     IslandBus.reply.value = ReplyState(n.id, a)
+                                 } else {
+@@ -1007,6 +1008,30 @@
+     }
+ }
+ 
++/** iOS-style pill button of a notification card: gray for "Reply", blue-tinted for the second action. */
++@Composable
++private fun PillAction(title: String, tinted: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
++    val haptic = rememberHaptic()
++    val interaction = remember { MutableInteractionSource() }
++    val pressed by interaction.collectIsPressedAsState()
++    val bg = if (tinted) Tints.Blue.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.16f)
++    val fg = if (tinted) Color(0xFF4DA3FF) else Color.White
++    Box(
++        modifier
++            .heightIn(min = 40.dp)
++            .clip(CircleShape)
++            .background(bg.copy(alpha = bg.alpha * if (pressed) 0.6f else 1f))
++            .clickable(interaction, indication = null) {
++                haptic()
++                onClick()
++            }
++            .padding(horizontal = 12.dp),
++        contentAlignment = Alignment.Center,
++    ) {
++        Text(title, color = fg, fontSize = 15.sp, fontWeight = FontWeight.SemiBold.island, maxLines = 1, overflow = TextOverflow.Ellipsis)
++    }
++}
++
+ /** Кнопка под текстом: просто жирная подпись цвета [accent], чуть тускнеет под пальцем. */
+ @Composable
+ private fun TextAction(title: String, accent: Color, modifier: Modifier = Modifier, size: TextUnit = 16.sp, onClick: () -> Unit) {
+diff -ruN a/app/src/main/java/com/akira/island/island/Expanded.kt b/app/src/main/java/com/akira/island/island/Expanded.kt
+--- a/app/src/main/java/com/akira/island/island/Expanded.kt	2026-11-19 13:18:00.902448778 +0300
++++ b/app/src/main/java/com/akira/island/island/Expanded.kt	2026-11-19 13:18:00.912146033 +0300
+@@ -302,57 +302,32 @@
+ }
+ 
+ /**
+- * Player on the lock screen, as on iOS 26: title and artist centred, thin progress bar with the times,
+- * like / ⏪ ⏸ ⏩ / output in one row and the volume slider at the bottom.
++ * Player on the lock screen, as on iOS: cover, title and artist on top, thin progress bar with the times and
++ * the transport buttons below. No lyrics and no volume slider.
+  */
+ @Composable
+ private fun LockPlayer(m: MediaInfo, s: IslandSettings, lyrics: Lyrics?) {
++    val context = LocalContext.current
+     val clock = rememberNowState(if (s.reduceEffects) 1_000 else 100, active = m.playing)
+-    Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+-            Text(m.title, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold.island, maxLines = 1,
+-                modifier = Modifier.marqueeFade().basicMarquee(iterations = Int.MAX_VALUE))
+-        }
+-        if (m.artist.isNotBlank()) {
+-            Spacer(Modifier.height(1.dp))
+-            Text(m.artist, color = Tints.Gray, fontSize = 14.sp, fontWeight = FontWeight.Medium.island, maxLines = 1,
+-                overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
++    Column(Modifier.fillMaxWidth().padding(top = 16.dp)) {
++        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
++            PlayerArt(m, s, Modifier.clickable { Controls.openApp(context, m.pkg) }, size = 56.dp)
++            Spacer(Modifier.width(12.dp))
++            Column(Modifier.weight(1f)) {
++                Text(m.title, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold.island, maxLines = 1,
++                    modifier = Modifier.fillMaxWidth().marqueeFade().basicMarquee(iterations = Int.MAX_VALUE))
++                if (m.artist.isNotBlank()) {
++                    Spacer(Modifier.height(1.dp))
++                    Text(m.artist, color = Tints.Gray, fontSize = 14.sp, fontWeight = FontWeight.Medium.island, maxLines = 1,
++                        overflow = TextOverflow.Ellipsis)
++                }
++            }
++            Spacer(Modifier.width(10.dp))
++            val egg by IslandBus.egg.collectAsState()
++            if (egg) SoulHeart(Modifier.size(24.dp)) else Equalizer(m.accent, m.playing, s.liveEqualizer, Modifier.size(28.dp, 22.dp))
+         }
+-        MediaLyrics(m, s, lyrics, clock)
+         MediaSeek(m, clock)
+         MediaControls(m.like, m.dislike, m.playing)
+-        Spacer(Modifier.height(4.dp))
+-        LockVolume()
+-    }
+-}
+-
+-/** Volume slider of the lock-screen player: the music stream, with the speaker icons at both ends. */
+-@Composable
+-private fun LockVolume() {
+-    val context = LocalContext.current
+-    val am = remember { context.getSystemService(AudioManager::class.java) }
+-    val max = remember { am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
+-    var volume by remember { androidx.compose.runtime.mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max) }
+-    // The hardware keys change the volume too: pick it up
+-    LaunchedEffect(Unit) {
+-        while (true) {
+-            volume = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max
+-            kotlinx.coroutines.delay(600)
+-        }
+-    }
+-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+-        Icon(Icons.Rounded.VolumeMute, null, tint = Dim, modifier = Modifier.size(16.dp))
+-        SeekBar(
+-            fraction = { volume },
+-            color = Color.White,
+-            enabled = true,
+-            onSeek = { f ->
+-                volume = f
+-                am.setStreamVolume(AudioManager.STREAM_MUSIC, kotlin.math.round(f * max).toInt().coerceIn(0, max), 0)
+-            },
+-            modifier = Modifier.weight(1f),
+-        )
+-        Icon(Icons.Rounded.VolumeUp, null, tint = Dim, modifier = Modifier.size(16.dp))
+     }
+ }
+ 
+diff -ruN a/app/src/main/java/com/akira/island/island/IslandOverlay.kt b/app/src/main/java/com/akira/island/island/IslandOverlay.kt
+--- a/app/src/main/java/com/akira/island/island/IslandOverlay.kt	2026-11-19 13:18:00.902794572 +0300
++++ b/app/src/main/java/com/akira/island/island/IslandOverlay.kt	2026-11-19 13:18:00.912311708 +0300
+@@ -54,6 +54,10 @@
+ import androidx.compose.foundation.gestures.detectDragGestures
+ import androidx.compose.foundation.gestures.detectTapGestures
+ import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.height
++import com.akira.island.core.InboxItem
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.Spacer
+ import androidx.compose.foundation.layout.fillMaxSize
+@@ -74,6 +78,8 @@
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.SideEffect
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.runtime.key
+ import androidx.compose.runtime.collectAsState
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableLongStateOf
+@@ -326,12 +332,20 @@
+     // takes the island at the top and the one after it the side bubble
+     val keyguardNow by IslandBus.keyguard.collectAsState()
+     val lockLayout = LOCK_CARD_ENABLED && keyguardNow && !calibrating && !(s.collapseOnShade && shadeOpen)
+-    val lockCardAct = if (!lockLayout) null else pool.firstOrNull { it is Act.MediaA && !it.transient }
+-        ?: if (LOCK_CARD_ONLY_MEDIA) null else pool.firstOrNull {
+-            !it.transient && it !is Act.CallA && it !is Act.PayA && it !is Act.InboxA && it !is Act.Idle &&
+-                !(it is Act.TimerA && it.t.ringing)
+-        }
+-    val topPool = if (lockCardAct == null) pool else pool.filterNot { it.id == lockCardAct.id }
++    // Like the iOS lock screen: a running stopwatch / timer card on top, the player below it. A third app does
++    // not get a card: it becomes a bubble next to the clock in the island. Without a player the panel shows
++    // just the running activity.
++    val lockMedia = if (!lockLayout) null else pool.firstOrNull { it is Act.MediaA && !it.transient }
++    val lockOther = if (!lockLayout) null else pool.firstOrNull {
++        !it.transient && (it is Act.StopwatchA || it is Act.ChronoA || it is Act.LiveA || (it is Act.TimerA && !it.t.ringing))
++    }
++    val lockIds = listOfNotNull(lockMedia?.id, lockOther?.id)
++    val lockCardAct = lockMedia ?: lockOther
++    val topPool = if (lockIds.isEmpty()) pool else pool.filterNot { it.id in lockIds }
++    // The island of a locked phone keeps the clock; only urgent things (call, payment, ringing timer) take it over
++    val islandPool = if (lockIds.isEmpty() || expanded) topPool else topPool.filter {
++        it.transient || it is Act.CallA || it is Act.PayA || (it is Act.TimerA && it.t.ringing)
++    }
+ 
+     // Пока двигают ползунок «Ширина с активностью», на острове пример: стрелка и метры
+     val previewUntil by IslandBus.widthPreviewUntil.collectAsState()
+@@ -349,7 +363,7 @@
+     val primary = when {
+         calibrating || s.collapseOnShade && shadeOpen -> Act.Idle
+         previewing -> Act.LiveA(WidthDemo)
+-        else -> primaryWithPendingAlarm(topPool, expanded, focus)
++        else -> primaryWithPendingAlarm(islandPool, expanded, focus)
+     }
+     // The call card (ringing, or ongoing and not swiped away) is a wide card: no bubbles, no expanding
+     val incoming = (primary as? Act.CallA)?.c?.let { it.incoming || !callCardHidden } == true
+@@ -373,7 +387,10 @@
+     // The bubble is as tall as the capsule next to it, so its bottom edge lines up with the island's bottom edge:
+     // the empty capsule is thinner (s.height) than a capsule with an activity (activeHeight)
+     val bubbleSize = if (primary is Act.Idle) s.height.dp else activeHeight(s)
+-    val slot = animateDpAsState(if (bubbleVisible || inboxVisible) bubbleSize + 6.dp else 0.dp, islandSpec(s), label = "slot")
++    // The messages bubble holds one icon per app (up to three, overlapping): its width grows with the apps
++    val inboxWidth = bubbleSize * inboxClusterFactor((lastInbox[0] as? Act.InboxA)?.items)
++    val slotTarget = maxOf(if (bubbleVisible) bubbleSize else 0.dp, if (inboxVisible) inboxWidth else 0.dp)
++    val slot = animateDpAsState(if (bubbleVisible || inboxVisible) slotTarget + 6.dp else 0.dp, islandSpec(s), label = "slot")
+ 
+     // Раскрытая активность пропала (музыку закрыли, таймер отменили) — сворачиваемся, а не показываем часы
+     val focusGone = expanded && focus != null && focus != Act.Idle.id && acts.none { it.id == focus }
+@@ -393,7 +410,7 @@
+     }
+ 
+     val keyguard by IslandBus.keyguard.collectAsState()
+-    val keepIdleOnLock = keyguard && lockCardAct != null
++    val keepIdleOnLock = keyguard && lockIds.isNotEmpty()
+     val autoHideEligible = !keepIdleOnLock && shouldTimeOutIdle(s, primary is Act.Idle && secondary == null && inboxNow == null, showExpanded, calibrating, screenOn, keyguard, shadeOpen)
+     var idleTimedOut by remember { mutableStateOf(false) }
+     var idleWakeRevision by remember { mutableLongStateOf(0L) }
+@@ -449,23 +466,15 @@
+             enter = if (s.reduceEffects) fadeIn() else scaleIn(islandSpec(s), initialScale = 0.3f, transformOrigin = top) + fadeIn(tween(120)),
+             exit = if (s.reduceEffects) fadeOut() else scaleOut(islandSpec(s), targetScale = 0.3f, transformOrigin = top) + fadeOut(tween(160)),
+         ) {
+-            CompositionLocalProvider(LocalActivities provides acts.filterNot { it.transient || (lockCardAct != null && it.id == lockCardAct.id) }) {
++            CompositionLocalProvider(LocalActivities provides acts.filterNot { it.transient || it.id in lockIds }) {
+                 IslandRow(slot, s, primary, showExpanded, lyrics, battery, bubbleVisible, lastSecondary[0], calibrating, onBody, onBubble, onBackdropShape, onBackdropSampler,
+                     inboxVisible = inboxVisible, inboxAct = lastInbox[0], inboxNow = inboxNow, bubbleSize = bubbleSize)
+             }
+         }
+-        // Lock screen: the main activity as a card at the bottom
+-        val lastLock = remember { arrayOfNulls<Act>(1) }
+-        if (lockCardAct != null) lastLock[0] = lockCardAct
+-        LaunchedEffect(lockCardAct == null) { if (lockCardAct == null) onLockCardBounds(Rect.Zero) }
+-        AnimatedVisibility(
+-            visible = lockCardAct != null,
+-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = LOCK_CARD_BOTTOM_DP.dp),
+-            enter = if (s.reduceEffects) fadeIn() else fadeIn(tween(220)) + slideInVertically(tween(320)) { it / 4 },
+-            exit = if (s.reduceEffects) fadeOut() else fadeOut(tween(160)) + slideOutVertically(tween(240)) { it / 4 },
+-        ) {
+-            lastLock[0]?.let { LockCard(it, s, lyrics, battery, onLockCardBounds) }
+-        }
++        // Lock screen: the cards are drawn by their own window at the bottom of the screen (see LockPanel)
++        val lockList = listOfNotNull(lockOther, lockMedia)
++        SideEffect { LockPanelState.acts.value = lockList }
++        DisposableEffect(Unit) { onDispose { LockPanelState.acts.value = emptyList() } }
+         if (timedHidden) CameraWakeTarget(s, onBounds = { r ->
+             wakeBounds.value = r
+             onBodyBounds(r)
+@@ -543,7 +552,10 @@
+     if (bgInbox != null) lastBgInbox[0] = bgInbox
+     // Capsule behind the card: the empty one (clock/battery) is thinner than one with an activity; the bubbles follow it
+     val bgCapsuleHeight = if (background is Act.Idle) s.height.dp else activeHeight(s)
+-    val bgSlot = animateDpAsState(if (bgBubble != null || bgInbox != null) bgCapsuleHeight + 6.dp else 0.dp, islandSpec(s), label = "bgSlot")
++    val bgInboxWidth = bgCapsuleHeight * inboxClusterFactor((lastBgInbox[0] as? Act.InboxA)?.items)
++    val bgSlot = animateDpAsState(
++        if (bgBubble != null || bgInbox != null) maxOf(if (bgBubble != null) bgCapsuleHeight else 0.dp, if (bgInbox != null) bgInboxWidth else 0.dp) + 6.dp else 0.dp,
++        islandSpec(s), label = "bgSlot")
+     val outerBubbleSize = bubbleSize ?: activeHeight(s)
+ 
+     // Player strip is narrower while any bubble is next to it
+@@ -609,15 +621,31 @@
+     }
+ }
+ 
++/** Activities shown by the lock-screen panel window, top to bottom. Published by [IslandOverlay]. */
++internal object LockPanelState { val acts = MutableStateFlow<List<Act>>(emptyList()) }
++
++/** Content of the lock-screen panel window: stopwatch/timer card on top, player card below it. */
++@Composable
++internal fun LockPanel() {
++    val acts by LockPanelState.acts.collectAsState()
++    val saved by SettingsRepo.state.collectAsState()
++    val powerSave by IslandBus.powerSave.collectAsState()
++    val s = remember(saved, powerSave) { saved.forPowerSave(powerSave) }
++    val lyrics by IslandBus.lyrics.collectAsState()
++    val battery by IslandBus.battery.collectAsState()
++    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++        acts.forEach { act -> key(act.id) { LockCard(act, s, lyrics, battery) } }
++    }
++}
++
+ /** The card on the lock screen: the expanded view of the activity (player, stopwatch, timer…) in a rounded card. */
+ @Composable
+-private fun LockCard(act: Act, s: IslandSettings, lyrics: Lyrics?, battery: BatteryInfo, onBounds: (Rect) -> Unit) {
+-    val width = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceIn(0.dp, 460.dp)
++private fun LockCard(act: Act, s: IslandSettings, lyrics: Lyrics?, battery: BatteryInfo) {
++    val width = lockPanelWidth()
+     val tilt = IslandBus.glassTilt.collectAsState()
+     Box(
+         Modifier
+-            .width(width)
+-            .onGloballyPositioned { onBounds(it.boundsInWindow()) }
++            .fillMaxWidth()
+             .islandSurface(s, true, RoundedCornerShape(34.dp), act.surfaceAccent(), tilt = { tilt.value }),
+     ) {
+         CompositionLocalProvider(LocalDetachedCard provides true, LocalLockCard provides true) {
+@@ -1189,6 +1217,10 @@
+ @Composable
+ private fun BubbleContent(act: Act, s: IslandSettings, size: Dp) {
+     val h = size
++    if (act is Act.InboxA) {
++        AppsBubble(act, s, h)
++        return
++    }
+     val haptic = rememberHaptic()
+     val tilt = IslandBus.glassTilt.collectAsState()
+     val previewTilt = LocalGlassTilt.current
+@@ -1230,11 +1262,51 @@
+             is Act.WeatherA -> Icon(Icons.Rounded.WbSunny, null, tint = Tints.Yellow, modifier = Modifier.size(inner))
+             is Act.HotspotA -> Icon(androidx.compose.material.icons.Icons.Rounded.WifiTethering,
+                 tr("Точка доступа", "Hotspot"), tint = Tints.Blue, modifier = Modifier.size(inner))
+-            is Act.InboxA -> AppIcon(act.items.last().appIcon, inner, Ios.chatbubble, Tints.Blue)
++            is Act.InboxA -> Unit
+             else -> Unit
+         }
+-        // Several retained messages: red count badge, kept inside the circle so the clip does not cut it
+-        if (act is Act.InboxA && act.items.size > 1) {
++    }
++}
++
++/** Width of the messages bubble in bubble heights: 1 for one notification, then 1.55 and 2.1 for two and three. */
++internal fun inboxClusterFactor(items: List<InboxItem>?): Float {
++    val n = items?.size ?: 1
++    return 1f + 0.55f * (n.coerceIn(1, 3) - 1)
++}
++
++/**
++ * Messages bubble: every notification keeps its own app icon, but they all live in ONE small island: one is a
++ * circle, two or three merge into a single pill with overlapping icons (a red count when there are more).
++ */
++@Composable
++private fun AppsBubble(act: Act.InboxA, s: IslandSettings, h: Dp) {
++    val haptic = rememberHaptic()
++    val tilt = IslandBus.glassTilt.collectAsState()
++    val previewTilt = LocalGlassTilt.current
++    // Newest notification first
++    val apps = act.items.reversed().take(3)
++    val width by animateDpAsState(h * inboxClusterFactor(act.items), islandSpec(s), label = "appsWidth")
++    val inner = h * 0.62f
++    val step = h * 0.55f
++    Box(
++        Modifier
++            .width(width).height(h)
++            .islandSurface(s, false, RoundedCornerShape(50), act.surfaceAccent(), tilt = { previewTilt ?: tilt.value })
++            .clickable {
++                haptic()
++                Controls.expand(act.id)
++            },
++        contentAlignment = Alignment.CenterStart,
++    ) {
++        // Drawn back to front: the oldest app first, so the newest ends up on top at the left edge
++        apps.reversed().forEachIndexed { r, item ->
++            val index = apps.size - 1 - r
++            Box(Modifier.padding(start = (h - inner) / 2 + step * index).zIndex(r.toFloat())) {
++                AppIcon(item.appIcon, inner, Ios.chatbubble, Tints.Blue,
++                    Modifier.border(1.5.dp, Color.Black.copy(alpha = 0.35f), CircleShape))
++            }
++        }
++        if (act.items.size > 3) {
+             val badge = h * 0.36f
+             Box(
+                 Modifier.align(Alignment.BottomEnd).padding(end = h * 0.1f, bottom = h * 0.1f)
+@@ -1378,9 +1450,13 @@
+ /** Lock screen: the main activity (the player first) moves to a card at the bottom, as on the iOS 26 lock screen. */
+ internal const val LOCK_CARD_ENABLED = true
+ /** Distance of the lock-screen card from the bottom edge: above the flashlight and camera shortcuts. */
+-internal const val LOCK_CARD_BOTTOM_DP = 96
++internal const val LOCK_CARD_BOTTOM_DP = 150
++
++/** Width of a lock-screen card (and of its window). */
++@Composable
++internal fun lockPanelWidth(): Dp = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceIn(0.dp, 460.dp)
+ /** Only the player goes to the lock-screen card; timers, stopwatch etc. stay in the island at the top. */
+-internal const val LOCK_CARD_ONLY_MEDIA = true
++internal const val LOCK_CARD_ONLY_MEDIA = false
+ /** True inside the lock-screen card: the player uses the iOS 26 layout (title centred, progress, controls, volume). */
+ internal val LocalLockCard = staticCompositionLocalOf { false }
+ 
+diff -ruN a/app/src/main/java/com/akira/island/service/IslandService.kt b/app/src/main/java/com/akira/island/service/IslandService.kt
+--- a/app/src/main/java/com/akira/island/service/IslandService.kt	2026-11-19 13:18:00.904671288 +0300
++++ b/app/src/main/java/com/akira/island/service/IslandService.kt	2026-11-19 13:18:00.913218995 +0300
+@@ -52,6 +52,8 @@
+ import com.akira.island.island.Egg
+ import com.akira.island.island.ISLAND_PAD_DP
+ import com.akira.island.island.IslandOverlay
++import com.akira.island.island.LockPanel
++import com.akira.island.island.LockPanelState
+ import com.akira.island.island.IslandTheme
+ import com.akira.island.island.IslandType
+ import com.akira.island.island.Rotated
+@@ -88,6 +90,7 @@
+     private var wm: WindowManager? = null
+     private var display: FrameLayout? = null
+     private var touch: TouchRoot? = null
++    private var lockPanel: android.widget.FrameLayout? = null
+     private var networkRateMonitor: NetworkRateMonitor? = null
+     private var backdrop: IslandBackdropBlur? = null
+     private var bubbleBackdrop: IslandBackdropBlur? = null
+@@ -410,6 +413,7 @@
+         placeDisplayWindow(SettingsRepo.current, IslandBus.contentRotation.value)
+         runCatching { wm?.addView(drawRoot, displayParams) }.onSuccess { display = drawRoot }
+ 
++        createLockPanel()
+         val touchRoot = TouchRoot(this, { display }, ::onOutsideTouch)
+         runCatching { wm?.addView(touchRoot, touchParams) }.onSuccess { touch = touchRoot }
+         scope.launch {
+@@ -420,6 +424,48 @@
+     }
+ 
+     /**
++     * Lock-screen control panel (stopwatch/timer card on top, player below). Its own window at the bottom of the
++     * screen, just above the phone / camera shortcuts, as wide as the cards and as tall as their content, so it
++     * takes touches (buttons, seek bar) only where the cards are. The cards come from [LockPanelState].
++     */
++    private fun createLockPanel() {
++        val compose = ComposeView(this).apply {
++            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
++            setContent { IslandTheme { LangScope { LockPanel() } } }
++        }
++        val root = android.widget.FrameLayout(this)
++        root.addView(compose)
++        owner.attach(root)
++        val widthDp = (resources.configuration.screenWidthDp - 32).coerceIn(0, 460)
++        val params = WindowManager.LayoutParams(
++            dp(widthDp),
++            WindowManager.LayoutParams.WRAP_CONTENT,
++            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
++            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
++                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
++                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
++                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
++            PixelFormat.TRANSLUCENT,
++        ).apply {
++            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
++            // The shortcuts (phone, camera) end about 12% of the screen height above the bottom edge
++            y = (resources.displayMetrics.heightPixels * 0.12f).toInt()
++            title = "DynamicIslandLock"
++        }
++        root.visibility = View.GONE
++        runCatching { wm?.addView(root, params) }.onSuccess { lockPanel = root }
++        scope.launch {
++            LockPanelState.acts.collect { updateLockPanel() }
++        }
++    }
++
++    private fun updateLockPanel() {
++        val root = lockPanel ?: return
++        val show = visible && IslandBus.keyguard.value && LockPanelState.acts.value.isNotEmpty()
++        root.visibility = if (show) View.VISIBLE else View.GONE
++    }
++
++    /**
+      * Касание мимо раскрытого острова сворачивает его, если не включено сохранение карточки.
+      * Касание мимо поля ответа закрывает ввод по прежнему правилу клавиатуры.
+      * Нажатия на клавиатуру тоже приходят сюда как «мимо» (она — отдельное окно), а где именно
+@@ -516,6 +562,7 @@
+         val turn = if (landscape && s.landscape == LandscapeMode.CAMERA) rotation else 0
+         IslandBus.contentRotation.value = turn
+         display?.visibility = if (visible) View.VISIBLE else View.GONE
++        updateLockPanel()
+         // Остров спрятан — выключен, вне расписания, на экране блокировки или в повороте (скажем, смотрят видео):
+         // Compose в его окне не рисует и не просыпается ради анимаций и эквалайзера, пока остров снова не покажется.
+         // С погашенным экраном так не делаем: включили экран — остров сразу показывает то, что есть сейчас,
+@@ -888,6 +935,8 @@
+         alarmMonitor?.stop()
+         scope.cancel()
+         touch?.let { runCatching { wm?.removeView(it) } }
++        lockPanel?.let { runCatching { wm?.removeView(it) } }
++        lockPanel = null
+         display?.let { runCatching { wm?.removeView(it) } }
+         touch = null
+         display = null
+diff -ruN a/app/src/main/java/com/akira/island/service/Messages.kt b/app/src/main/java/com/akira/island/service/Messages.kt
+--- a/app/src/main/java/com/akira/island/service/Messages.kt	2026-11-19 13:18:00.905103016 +0300
++++ b/app/src/main/java/com/akira/island/service/Messages.kt	2026-11-19 13:18:00.913471551 +0300
+@@ -44,7 +44,6 @@
+ 
+     private val skipCategories = setOf(
+         Notification.CATEGORY_TRANSPORT,
+-        Notification.CATEGORY_CALL,
+         Notification.CATEGORY_PROGRESS,
+         Notification.CATEGORY_SERVICE,
+         Notification.CATEGORY_SYSTEM,
+@@ -64,6 +63,9 @@
+         if (sbn.isOngoing) return
+         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+         if (n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0) return
++        // A missed call is an ordinary (not ongoing) call-category notification and is shown like a message;
++        // a ringing or ongoing call has its own card
++        if (n.category == Notification.CATEGORY_CALL && n.fullScreenIntent != null) return
+         NotifApps.seen(service, pkg, appName)
+         val rule = s.msgAppRules[pkg]
+         if (rule != AppRule.ALWAYS && n.category in skipCategories) return NotifDebug.add(pkg, trf("Служебное: {0}", "Service notification: {0}", n.category))

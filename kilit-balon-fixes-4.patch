@@ -1,0 +1,846 @@
+--- a/app/src/main/java/com/akira/island/core/Controls.kt
++++ b/app/src/main/java/com/akira/island/core/Controls.kt
+@@ -142,6 +142,7 @@
+             openApp(context, pkg)
+             return
+         }
++        collapse()
+         val intent = Intent(context, com.akira.island.service.WakeActivity::class.java)
+             .putExtra(com.akira.island.service.WakeActivity.EXTRA_OPEN_PKG, pkg)
+             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+--- a/app/src/main/java/com/akira/island/island/Expanded.kt
++++ b/app/src/main/java/com/akira/island/island/Expanded.kt
+@@ -238,39 +238,140 @@
+ }
+ 
+ /**
+- * The opened messages bubble: every notification is a card of its own, one under the other like the stopwatch
+- * and live cards. Three people on Instagram are three cards. Newest on top; tapping a card opens that chat.
+- * There is no "clear all" here.
++ * iOS Bildirim Merkezi tarzı açılan bildirim baloncuğu:
++ * Her bildirim kendi cam kartında alt alta gösterilir. Çok fazla bildirim olduğunda
++ * aşağı kaydırma yapmak yerine kart boyutlarını ekran yüksekliğine ve bildirim sayısına göre orantılı küçültür.
+  */
+ @Composable
+ internal fun InboxCards(items: List<InboxItem>, s: IslandSettings, width: Dp) {
+-    val locked by IslandBus.locked.collectAsState()
++    val context = LocalContext.current
++    val lockedState by IslandBus.locked.collectAsState()
++    val screenOn by IslandBus.screenOn.collectAsState()
++    val locked = remember(lockedState, screenOn) {
++        if (!lockedState) false
++        else {
++            val realLocked = runCatching {
++                context.getSystemService(android.app.KeyguardManager::class.java)?.isDeviceLocked
++            }.getOrNull() == true
++            if (!realLocked && screenOn) IslandBus.locked.value = false
++            realLocked
++        }
++    }
+     val now = rememberWallNow(30_000)
++    val screenHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
++    val maxCards = if (screenHeight < 720) 10 else 14
++    val ordered = remember(items, maxCards) { items.asReversed().take(maxCards) }
++    val count = ordered.size
++
++    // Bildirim sayısına göre kaydırmasız orantılı küçültme
++    val spacing = when {
++        count <= 3 -> 8.dp
++        count <= 5 -> 6.dp
++        count <= 8 -> 4.dp
++        else -> 3.dp
++    }
++
+     IslandTextTheme(s) {
+         Column(
+-            Modifier.width(width).heightIn(max = s.expandedMaxHeight.dp).verticalScroll(rememberScrollState()),
+-            verticalArrangement = Arrangement.spacedBy(8.dp),
++            Modifier.width(width),
++            verticalArrangement = Arrangement.spacedBy(spacing),
+         ) {
+-            items.asReversed().forEach { item ->
+-                androidx.compose.runtime.key(item.key) { InboxCard(item, s, locked, now) }
+-            }
+-        }
+-    }
+-}
+-
+-@Composable
+-private fun InboxCard(item: InboxItem, s: IslandSettings, locked: Boolean, now: Long) {
++            // iOS Bildirim Merkezi Başlığı ve Buzlu Cam Temizle Butonu
++            Row(
++                Modifier
++                    .fillMaxWidth()
++                    .padding(horizontal = 6.dp, vertical = 2.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                Text(
++                    tr("Bildirim Merkezi", "Notification Center"),
++                    color = Color.White,
++                    fontSize = if (count >= 6) 15.sp else 17.sp,
++                    fontWeight = FontWeight.SemiBold.island,
++                    modifier = Modifier.weight(1f),
++                )
++                Box(
++                    Modifier
++                        .clip(CircleShape)
++                        .background(Color.White.copy(alpha = 0.16f))
++                        .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
++                        .clickable {
++                            if (!locked) {
++                                NotifListener.dismissAll(ordered.map { it.key })
++                            }
++                            Inbox.clear()
++                            Controls.collapse()
++                        }
++                        .padding(horizontal = 12.dp, vertical = 5.dp),
++                    contentAlignment = Alignment.Center,
++                ) {
++                    Text(
++                        tr("Temizle", "Clear"),
++                        color = Color.White,
++                        fontSize = 12.sp,
++                        fontWeight = FontWeight.SemiBold.island,
++                    )
++                }
++            }
++
++            ordered.forEach { item ->
++                androidx.compose.runtime.key(item.key) { InboxCard(item, s, locked, now, count) }
++            }
++        }
++    }
++}
++
++@Composable
++private fun InboxCard(item: InboxItem, s: IslandSettings, locked: Boolean, now: Long, totalCount: Int) {
+     val context = LocalContext.current
+     val tilt = IslandBus.glassTilt.collectAsState()
+     val hidden = locked && item.sensitive
+     val face = if (hidden) item.appIcon else item.avatar ?: item.appIcon
+     val tap = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+-    // Swipe the card to the left to remove it (there is no X button)
+     val scope = rememberCoroutineScope()
+     val offset = remember { Animatable(0f) }
+     val threshold = with(androidx.compose.ui.platform.LocalDensity.current) { 96.dp.toPx() }
++
++    val avatarSize = when {
++        totalCount <= 3 -> 44.dp
++        totalCount <= 5 -> 36.dp
++        totalCount <= 8 -> 28.dp
++        else -> 24.dp
++    }
++    val badgeSize = (avatarSize * 0.42f).coerceAtLeast(12.dp)
++    val vPad = when {
++        totalCount <= 3 -> 11.dp
++        totalCount <= 5 -> 8.dp
++        totalCount <= 8 -> 5.dp
++        else -> 4.dp
++    }
++    val hPad = if (totalCount <= 4) 14.dp else 11.dp
++    val corner = when {
++        totalCount <= 3 -> 26.dp
++        totalCount <= 5 -> 22.dp
++        totalCount <= 8 -> 18.dp
++        else -> 15.dp
++    }
++    val titleSize = when {
++        totalCount <= 3 -> 15.sp
++        totalCount <= 5 -> 14.sp
++        totalCount <= 8 -> 13.sp
++        else -> 12.sp
++    }
++    val bodySize = when {
++        totalCount <= 3 -> 13.5.sp
++        totalCount <= 5 -> 12.5.sp
++        totalCount <= 8 -> 11.5.sp
++        else -> 11.sp
++    }
++    val bodyMaxLines = if (totalCount <= 3) 2 else 1
++
+     fun remove() {
+-        if (!locked && NotifListener.canDismiss(item.key)) NotifListener.dismiss(item.key)
++        val base = item.key.substringBefore("::")
++        val hasSiblings = IslandBus.inbox.value.any { it.key != item.key && it.key.startsWith("$base::") }
++        if (!locked && !hasSiblings && NotifListener.canDismiss(item.key)) {
++            NotifListener.dismiss(item.key)
++        }
+         Inbox.remove(item.key)
+     }
+     Row(
+@@ -280,7 +381,10 @@
+                 translationX = offset.value
+                 alpha = (1f - abs(offset.value) / (threshold * 4f)).coerceIn(0f, 1f)
+             }
+-            .islandSurface(s, true, RoundedCornerShape(30.dp), null, tilt = { tilt.value })
++            .clip(RoundedCornerShape(corner))
++            .background(Color(0xFF1C1C1E).copy(alpha = 0.88f))
++            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(corner))
++            .islandSurface(s, true, RoundedCornerShape(corner), null, tilt = { tilt.value })
+             .pointerInput(item.key) {
+                 detectHorizontalDragGestures(
+                     onDragEnd = {
+@@ -300,43 +404,43 @@
+                 }
+             }
+             .clickable(tap, indication = null) {
+-                if (!Controls.send(context, item.intent)) Controls.openApp(context, item.pkg)
++                if (!Controls.send(context, item.intent)) Controls.openAppUnlocking(context, item.pkg)
+                 Inbox.remove(item.key)
+                 Controls.collapse()
+             }
+-            .padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
++            .padding(horizontal = hPad, vertical = vPad),
+         verticalAlignment = Alignment.CenterVertically,
+     ) {
+-        Box(Modifier.size(48.dp)) {
++        Box(Modifier.size(avatarSize)) {
+             if (face != null) {
+-                Image(face, null, Modifier.size(48.dp).clip(CircleShape), contentScale = ContentScale.Crop)
++                Image(face, null, Modifier.size(avatarSize).clip(CircleShape), contentScale = ContentScale.Crop)
+             } else {
+-                Box(Modifier.size(48.dp).clip(CircleShape).background(Color(0xFF2C2C2E)), contentAlignment = Alignment.Center) {
+-                    Icon(Ios.chatbubble, null, tint = Color.White, modifier = Modifier.size(24.dp))
+-                }
+-            }
+-            // The app the message came from, as on iOS: small icon on the corner of the avatar
++                Box(Modifier.size(avatarSize).clip(CircleShape).background(Color(0xFF2C2C2E)), contentAlignment = Alignment.Center) {
++                    Icon(Ios.chatbubble, null, tint = Color.White, modifier = Modifier.size(avatarSize * 0.5f))
++                }
++            }
++            // iOS tarzı sağ alt köşede küçük uygulama ikonu
+             if (!hidden && item.avatar != null && item.appIcon != null) {
+                 Image(item.appIcon, null,
+-                    Modifier.size(20.dp).align(Alignment.BottomEnd).border(1.5.dp, Color.Black.copy(alpha = 0.5f), CircleShape).clip(CircleShape),
++                    Modifier.size(badgeSize).align(Alignment.BottomEnd).border(1.5.dp, Color.Black.copy(alpha = 0.6f), CircleShape).clip(CircleShape),
+                     contentScale = ContentScale.Crop)
+             }
+         }
+-        Spacer(Modifier.width(12.dp))
++        Spacer(Modifier.width(if (totalCount <= 4) 12.dp else 9.dp))
+         Column(Modifier.weight(1f)) {
+             Row(verticalAlignment = Alignment.CenterVertically) {
+-                Text(if (hidden) item.appName else item.title, color = Color.White, fontSize = 16.sp,
++                Text(if (hidden) item.appName else item.title, color = Color.White, fontSize = titleSize,
+                     fontWeight = FontWeight.SemiBold.island, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                 Spacer(Modifier.width(6.dp))
+-                Text(ago(now - item.time), color = Dim, fontSize = 12.sp, maxLines = 1)
++                Text(ago(now - item.time), color = Dim, fontSize = 11.sp, maxLines = 1)
+             }
+             val text = if (hidden) tr("Содержимое скрыто", "Content hidden") else item.text
+             if (text.isNotEmpty()) {
+-                Text(text, color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+-            }
+-            if (!hidden) {
+-                Text(item.appName, color = Dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+-                    modifier = Modifier.padding(top = 2.dp))
++                Text(text, color = Color.White.copy(alpha = 0.85f), fontSize = bodySize, maxLines = bodyMaxLines, overflow = TextOverflow.Ellipsis)
++            }
++            if (!hidden && totalCount <= 4) {
++                Text(item.appName, color = Dim, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
++                    modifier = Modifier.padding(top = 1.dp))
+             }
+         }
+     }
+@@ -407,7 +511,7 @@
+     val clock = rememberNowState(if (s.reduceEffects) 1_000 else 100, active = m.playing)
+     Column(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+-            PlayerArt(m, s, Modifier.clickable { Controls.openApp(context, m.pkg) }, size = 56.dp)
++            PlayerArt(m, s, Modifier.clickable { Controls.openAppUnlocking(context, m.pkg) }, size = 56.dp)
+             Spacer(Modifier.width(12.dp))
+             Column(Modifier.weight(1f)) {
+                 Text(m.title, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold.island, maxLines = 1,
+--- a/app/src/main/java/com/akira/island/island/IslandOverlay.kt
++++ b/app/src/main/java/com/akira/island/island/IslandOverlay.kt
+@@ -268,14 +268,31 @@
+             )
+         }
+     }
+-    // Смахнутый входящий не показываем, пока звонит (сбрасывает служба, когда звонить перестали)
+-    // The card of an ongoing call comes back for every new call and when a ringing call is answered
+-    LaunchedEffect(call == null, call?.incoming) { CallCardState.hidden.value = false }
++    // Arama ekranı (InCallUI / Telefon uygulaması) açılınca adayı otomatik gizle, çıkınca otomatik aç
++    val overlayContext = LocalContext.current
++    val isInCallScreen = remember(foreground, call) {
++        val fg = foreground ?: return@remember false
++        val defaultDialer = runCatching {
++            overlayContext.getSystemService(android.telecom.TelecomManager::class.java)?.defaultDialerPackage
++        }.getOrNull()
++        fg == call?.pkg ||
++            fg == defaultDialer ||
++            fg.contains("incallui", ignoreCase = true) ||
++            fg == "com.android.server.telecom" ||
++            fg == "com.google.android.dialer"
++    }
++    LaunchedEffect(isInCallScreen, expanded, focus) {
++        if (isInCallScreen && expanded && focus?.startsWith("call") == true) {
++            Controls.collapse()
++        }
++    }
++    // Devam eden aramalar üste sabit dev kart olarak değil, kronometre gibi kompakt kapsülde görünür
++    LaunchedEffect(call == null, call?.incoming) { CallCardState.hidden.value = true }
+     val callCardHidden by CallCardState.hidden.collectAsState()
+     val callHidden by IslandBus.callHidden.collectAsState()
+     val acts = buildList {
+         // Входящий звонок важнее всего, как на iPhone
+-        if (call != null && call.incoming && !callHidden) add(Act.CallA(call))
++        if (call != null && !isInCallScreen && call.incoming && !callHidden) add(Act.CallA(call))
+         notice?.let { n ->
+             // Hide only the presentation while its source is in front. Do not cancel the Android
+             // notification or remove history; returning before expiry can show the banner again.
+@@ -288,7 +305,7 @@
+         if (t != null && t.ringing) persistent += Act.TimerA(t)
+         // Оплата телефоном — пока ждём терминал, она главнее остального
+         payReady?.let { persistent += Act.PayA(it) }
+-        if (call != null && !call.incoming) persistent += Act.CallA(call)
++        if (call != null && !call.incoming && !isInCallScreen) persistent += Act.CallA(call)
+         if (torch.on && s.cardTorch) persistent += Act.TorchA(torch)
+         if (t != null && !t.ringing) persistent += Act.TimerA(t)
+         if (s.cardLive) liveActive.maxByOrNull { it.postTime }?.let { persistent += Act.LiveA(it) }
+@@ -306,7 +323,7 @@
+         if (s.evHotspot && hotspot.enabled == true) persistent += Act.HotspotA(hotspot)
+         // «Только при подключении» — зарядка не занимает остров всё время, пока телефон заряжается
+         if (s.cardCharging && battery.charging && !s.chargingBrief) persistent += Act.ChargingA(battery)
+-        if (s.historyMinutes != 0 && inbox.isNotEmpty()) persistent += Act.InboxA(inbox)
++        if (inbox.isNotEmpty()) persistent += Act.InboxA(inbox)
+         if (extras.weatherEnabled && !extras.briefEnabled) weather?.let { persistent += Act.WeatherA(it) }
+         // Ожидающий будильник остаётся доступен в пузырьке, не занимая основную капсулу.
+         val alarm = nextAlarm
+@@ -644,13 +661,33 @@
+ @Composable
+ private fun InboxCardsHost(items: List<InboxItem>, s: IslandSettings, onBounds: (Rect) -> Unit) {
+     val width = expandedWidth(LocalConfiguration.current.screenWidthDp.dp, s)
++    val haptic = rememberHaptic()
+     val visible = remember { androidx.compose.animation.core.MutableTransitionState(false).apply { targetState = true } }
+     AnimatedVisibility(
+         visibleState = visible,
+         enter = if (s.reduceEffects) fadeIn() else fadeIn(tween(160)) +
+             scaleIn(islandSpec(s), initialScale = 0.85f, transformOrigin = TransformOrigin(0.5f, 0f)),
+     ) {
+-        Box(Modifier.onGloballyPositioned { onBounds(it.boundsInWindow()) }) { InboxCards(items, s, width) }
++        Box(
++            Modifier
++                .onGloballyPositioned { onBounds(it.boundsInWindow()) }
++                .pointerInput(Unit) {
++                    val threshold = 36.dp.toPx()
++                    var dy = 0f
++                    detectDragGestures(
++                        onDragStart = { dy = 0f },
++                        onDragEnd = {
++                            if (dy < -threshold) {
++                                haptic()
++                                Controls.collapse()
++                            }
++                        },
++                    ) { change, amount ->
++                        change.consume()
++                        dy += amount.y
++                    }
++                },
++        ) { InboxCards(items, s, width) }
+     }
+ }
+ 
+@@ -1195,11 +1232,10 @@
+         // Оплата: нажатие открывает приложение оплаты (окно Google открывать нечего)
+         is Act.PayA -> if (act.pkg != PayMonitor.GMS) Controls.openApp(context, act.pkg)
+         is Act.TimerA -> if (act.t.ringing) Controls.cancelTimer() else perform(context, s.tapAction, act)
+-        is Act.CallA -> if (act.c.incoming || !CallCardState.hidden.value) {
++        is Act.CallA -> if (act.c.incoming) {
+             Controls.openCall(context, act.c)
+         } else {
+-            // Call capsule after the card was swiped away: bring the card back
+-            CallCardState.hidden.value = false
++            Controls.expand(act.id)
+         }
+         else -> perform(context, s.tapAction, act)
+     }
+@@ -1347,20 +1383,6 @@
+                     Modifier.border(1.5.dp, Color.Black.copy(alpha = 0.35f), CircleShape))
+             }
+         }
+-        if (act.items.size > 3) {
+-            val badge = h * 0.36f
+-            Box(
+-                Modifier.align(Alignment.BottomEnd).padding(end = h * 0.1f, bottom = h * 0.1f)
+-                    .size(badge).clip(CircleShape).background(Tints.Red),
+-                contentAlignment = Alignment.Center,
+-            ) {
+-                Text(
+-                    if (act.items.size > 9) "9+" else act.items.size.toString(),
+-                    color = Color.White, fontSize = (h.value * 0.2f).sp, fontWeight = FontWeight.Bold,
+-                    maxLines = 1, softWrap = false,
+-                )
+-            }
+-        }
+     }
+ }
+ 
+@@ -1485,8 +1507,8 @@
+ /** Same, while a bubble (activity or messages) is shown next to it, so the bubble fits on screen. */
+ internal const val MEDIA_WIDTH_WITH_BUBBLE = 0.70f
+ 
+-/** The card of an ongoing call stays at the top until it is swiped up; a tap on the call capsule opens it again. */
+-internal object CallCardState { val hidden = MutableStateFlow(false) }
++/** Ongoing calls stay compact by default (like a stopwatch capsule); tapping expands the call card. */
++internal object CallCardState { val hidden = MutableStateFlow(true) }
+ 
+ /** Lock screen: the main activity (the player first) moves to a card at the bottom, as on the iOS 26 lock screen. */
+ internal const val LOCK_CARD_ENABLED = true
+--- a/app/src/main/java/com/akira/island/service/Messages.kt
++++ b/app/src/main/java/com/akira/island/service/Messages.kt
+@@ -8,6 +8,7 @@
+ import android.os.Build
+ import android.os.Bundle
+ import android.os.Parcelable
++import android.os.PowerManager
+ import android.os.SystemClock
+ import android.provider.Settings
+ import android.service.notification.NotificationListenerService
+@@ -19,15 +20,15 @@
+ import androidx.compose.ui.graphics.asImageBitmap
+ import androidx.compose.ui.graphics.lerp
+ import androidx.compose.ui.graphics.luminance
++import androidx.core.graphics.drawable.toBitmap
+ import androidx.palette.graphics.Palette
+-import androidx.core.graphics.drawable.toBitmap
++import com.akira.island.R
+ import com.akira.island.core.AppMessage
+ import com.akira.island.core.IslandBus
+ import com.akira.island.core.MsgAction
+ import com.akira.island.core.Notice
+ import com.akira.island.core.NoticeStyle
+ import com.akira.island.core.Tints
+-import com.akira.island.R
+ import com.akira.island.core.tr
+ import com.akira.island.core.trf
+ import com.akira.island.data.AccentMode
+@@ -54,7 +55,12 @@
+         "location_sharing",
+     )
+ 
+-    fun maybeShow(service: NotificationListenerService, sbn: StatusBarNotification, appName: String) {
++    fun maybeShow(
++        service: NotificationListenerService,
++        sbn: StatusBarNotification,
++        appName: String,
++        silentInboxOnly: Boolean = false,
++    ) {
+         val s = SettingsRepo.current
+         if (!s.cardMessages || !s.enabled) return
+         val n = sbn.notification ?: return
+@@ -71,7 +77,7 @@
+         if (rule != AppRule.ALWAYS && n.category in skipCategories) return NotifDebug.add(pkg, trf("Служебное: {0}", "Service notification: {0}", n.category))
+         if (rule == AppRule.NEVER) return NotifDebug.add(pkg, tr("Выключено для приложения", "Turned off for this app"))
+         // Пока открыто само приложение, оно и так показывает сообщение — если не попросили показывать и тогда
+-        if (!s.msgInApp && IslandBus.foregroundPackage.value == pkg) return NotifDebug.add(pkg, tr("Приложение открыто", "The app is open"))
++        if (!silentInboxOnly && !s.msgInApp && IslandBus.foregroundPackage.value == pkg) return NotifDebug.add(pkg, tr("Приложение открыто", "The app is open"))
+ 
+         // Тихие и свёрнутые не показываем — как и система, если не попросили («Тихие уведомления» или
+         // «Всегда» для приложения). Заглушённые «Не беспокоить» не показываем никогда
+@@ -85,12 +91,11 @@
+             if (!ranking.matchesInterruptionFilter()) return NotifDebug.add(pkg, tr("«Не беспокоить»", "Do Not Disturb"))
+         }
+ 
+-        // Экран блокировки: как в шторке — уведомления там скрыты, «секретные» не показываются,
+-        // у остальных без разрешения показывать содержимое видно только название приложения
+-        val locked = IslandBus.locked.value
+-        if (locked && !Lockscreen.showsNotifications(service)) {
+-            return NotifDebug.add(pkg, tr("На экране блокировки уведомления выключены", "Notifications are off on the lock screen"))
+-        }
++        val interactive = runCatching { service.getSystemService(PowerManager::class.java)?.isInteractive }.getOrNull()
++        val screenOff = !IslandBus.screenOn.value || interactive == false
++        val locked = IslandBus.locked.value ||
++            (runCatching { service.getSystemService(KeyguardManager::class.java)?.isDeviceLocked }.getOrNull() == true)
++
+         val visibility = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && ranked) {
+             val override = ranking.lockscreenVisibilityOverride
+             if (override != NotificationListenerService.Ranking.VISIBILITY_NO_OVERRIDE) override else n.visibility
+@@ -98,19 +103,25 @@
+             n.visibility
+         }
+         val secret = visibility == Notification.VISIBILITY_SECRET
+-        if (locked && secret) return NotifDebug.add(pkg, tr("Скрыто на экране блокировки", "Hidden on the lock screen"))
+-        val sensitive = Lockscreen.isSecure(service) &&
+-            (secret || visibility == Notification.VISIBILITY_PRIVATE && !Lockscreen.showsPrivate(service))
++        val hideOnLock = !Lockscreen.showsNotifications(service) || secret ||
++            (visibility == Notification.VISIBILITY_PRIVATE && !Lockscreen.showsPrivate(service))
++        val sensitive = Lockscreen.isSecure(service) && hideOnLock
++
++        // Ekran kapalıyken gelen bildirimleri düşürme; ekranı açınca baloncukta görünsün.
++        // Yalnızca ekran açıkken ve kilit ekranı bildirimleri sistemde tamamen kapalıysa pop-up kartı engelle.
++        if (!screenOff && !silentInboxOnly && locked && (!Lockscreen.showsNotifications(service) || secret)) {
++            return NotifDebug.add(pkg, tr("Скрыто на экране блокировки", "Hidden on the lock screen"))
++        }
+ 
+         val ex = n.extras ?: return
+         // Мессенджер дописал в уведомление ваш же ответ — это не новое сообщение
+         if (ownLastMessage(ex)) return NotifDebug.add(pkg, tr("Ваше же сообщение", "Your own message"))
+-        val title = (ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
++        val rawTitle = (ex.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
+             ?: ex.getCharSequence(Notification.EXTRA_TITLE))?.toString()?.trim().orEmpty()
+-        val text = lastMessage(ex)
++        val rawText = lastMessage(ex)
+             ?: (ex.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex.getCharSequence(Notification.EXTRA_TEXT))?.toString()?.trim()
+             ?: ""
+-        if (title.isEmpty() && text.isEmpty()) return NotifDebug.add(pkg, tr("Без текста", "No text"))
++        if (rawTitle.isEmpty() && rawText.isEmpty()) return NotifDebug.add(pkg, tr("Без текста", "No text"))
+ 
+         @Suppress("DEPRECATION")
+         val messages = ex.getParcelableArray(Notification.EXTRA_MESSAGES)
+@@ -121,49 +132,138 @@
+             person?.key ?: person?.name?.toString()
+         } else null
+         val identity = MessageIdentity(
+-            title, text,
++            rawTitle, rawText,
+             senderIdentity ?: last?.getCharSequence("sender")?.toString().orEmpty(),
+             last?.getLong("time", 0L)?.takeIf { it > 0 } ?: n.`when`.takeIf { it > 0 } ?: sbn.postTime,
+             messages?.size ?: n.number,
+         )
+-        if (!deduplicator.shouldShow(sbn.key, pkg, identity, s.msgDedupe, SystemClock.elapsedRealtime())) {
++        if (!silentInboxOnly && !deduplicator.shouldShow(sbn.key, pkg, identity, s.msgDedupe, SystemClock.elapsedRealtime())) {
+             return NotifDebug.add(pkg, tr("Повтор", "Repeat"))
+         }
+ 
+         val avatar = runCatching {
+             n.getLargeIcon()?.loadDrawable(service)?.toBitmap(128, 128)?.asImageBitmap()
+         }.getOrNull()
++        val appIcon = NotificationParser.icon(service, sbn.packageName)
+         val actions = if (s.msgActions) buttons(n) else emptyList()
+-        val message = AppMessage(
++        val accent = if (s.accentMode == AccentMode.ADAPTIVE) accentOf(avatar ?: appIcon) else null
++        val msgHistory = history(ex)
++
++        // Instagram ve WhatsApp gibi uygulamalarda birden fazla kişiden gelen mesajları ayrı ayrı çıkar
++        val entries = extractDistinctSenders(ex, appName, rawTitle, rawText)
++        val multiSender = entries.size > 1
++
++        entries.forEach { (senderTitle, senderText) ->
++            val resolvedTitle = senderTitle.ifEmpty { appName }
++            val itemKey = "${sbn.key}::$resolvedTitle"
++            val message = AppMessage(
++                key = itemKey,
++                pkg = sbn.packageName,
++                appName = appName,
++                text = senderText,
++                avatar = if (multiSender) null else avatar,
++                appIcon = appIcon,
++                intent = n.contentIntent,
++                actions = actions,
++                accent = accent,
++                history = msgHistory,
++                sensitive = sensitive,
++            )
++            // Ekran kapalıyken gelen bildirimler kart olarak açılmaz, doğrudan bildirim balonuna düşer
++            Inbox.add(message, resolvedTitle, forceWhenScreenOff = screenOff || silentInboxOnly)
++        }
++
++        if (screenOff || silentInboxOnly) {
++            NotifDebug.add(pkg, tr("В пузырь (экран выключен)", "Added to bubble (screen off)"))
++            return
++        }
++
++        val latestEntry = entries.last()
++        val bannerMessage = AppMessage(
+             key = sbn.key,
+             pkg = sbn.packageName,
+             appName = appName,
+-            text = text,
++            text = latestEntry.second,
+             avatar = avatar,
+-            appIcon = NotificationParser.icon(service, sbn.packageName),
++            appIcon = appIcon,
+             intent = n.contentIntent,
+             actions = actions,
+             // Разбор палитры нужен только для цвета кнопок «Из аватара»
+-            accent = if (s.accentMode == AccentMode.ADAPTIVE) accentOf(avatar ?: NotificationParser.icon(service, sbn.packageName)) else null,
+-            history = history(ex),
++            accent = accent,
++            history = msgHistory,
+             sensitive = sensitive,
+         )
+         IslandBus.post(
+             Notice(
+-                title = title.ifEmpty { appName },
++                title = latestEntry.first.ifEmpty { appName },
+                 icon = Ios.load(service, R.drawable.ios_chatbubble_ellipses),
+                 tint = Tints.Blue,
+                 style = NoticeStyle.MESSAGE,
+-                message = message,
++                message = bannerMessage,
+                 // Текст читать дольше, чем короткое событие, а с кнопками — ещё дольше: нужно успеть нажать
+                 extraMs = if (actions.isEmpty()) 2_000 else 4_500,
+             ),
+         )
+         NotifDebug.add(pkg, tr("Показано", "Shown"))
+-        // «История уведомлений»: после плашки сообщение ждёт в острове
+-        if (s.historyMinutes != 0) Inbox.add(message, title.ifEmpty { appName })
+         // Для «Системных плашек»: какой мессенджер и всплывает ли у него ещё своя плашка поверх острова
+         SystemBanners.onMessage(sbn.packageName, n.channelId, popsUp = !ranked || ranking.importance >= NotificationManager.IMPORTANCE_HIGH)
++    }
++
++    /**
++     * Instagram ve WhatsApp gibi uygulamaların tek bildirim içinde birleştirdiği farklı kişileri
++     * ayrı (Gönderici -> Son Mesaj) çiftlerine böler.
++     */
++    private fun extractDistinctSenders(
++        ex: Bundle,
++        appName: String,
++        rawTitle: String,
++        rawText: String,
++    ): List<Pair<String, String>> {
++        val isGroup = ex.getBoolean("android.isGroupConversation", false)
++        @Suppress("DEPRECATION")
++        val arr: Array<Parcelable>? = ex.getParcelableArray(Notification.EXTRA_MESSAGES)
++        if (!isGroup && !arr.isNullOrEmpty()) {
++            val perSender = LinkedHashMap<String, String>()
++            for (p in arr) {
++                val b = p as? Bundle ?: continue
++                val msgText = b.getCharSequence("text")?.toString()?.trim().orEmpty()
++                if (msgText.isEmpty()) continue
++                val sender = b.getCharSequence("sender")?.toString()?.trim()
++                    ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++                        @Suppress("DEPRECATION")
++                        runCatching { b.getParcelable<Person>("sender_person")?.name?.toString()?.trim() }.getOrNull()
++                    } else null
++                val resolvedSender = sender?.takeIf { it.isNotEmpty() } ?: rawTitle.ifEmpty { appName }
++                perSender[resolvedSender] = msgText
++            }
++            if (perSender.isNotEmpty()) {
++                return perSender.map { it.key to it.value }
++            }
++        }
++
++        // InboxStyle (EXTRA_TEXT_LINES) özet bildirimleri: "kullanici_adi: mesaj" formatını ayrıştır
++        if (!isGroup && (rawTitle.equals(appName, ignoreCase = true) || rawTitle.isEmpty())) {
++            val lines = ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
++            if (!lines.isNullOrEmpty()) {
++                val perSender = LinkedHashMap<String, String>()
++                for (line in lines) {
++                    val str = line?.toString()?.trim().orEmpty()
++                    val idx = str.indexOf(':')
++                    if (idx in 1..40) {
++                        val sender = str.substring(0, idx).trim()
++                        val msg = str.substring(idx + 1).trim()
++                        if (sender.isNotEmpty() && msg.isNotEmpty()) {
++                            perSender[sender] = msg
++                        }
++                    }
++                }
++                if (perSender.isNotEmpty()) {
++                    return perSender.map { it.key to it.value }
++                }
++            }
++        }
++
++        return listOf(rawTitle.ifEmpty { appName } to rawText)
+     }
+ 
+     /**
+@@ -180,7 +280,7 @@
+         }.orEmpty()
+         val reply = all.firstOrNull { it.isReply }
+         val read = all.firstOrNull { a ->
+-            !a.isReply && listOf("прочит", "read").any { it in a.title.lowercase() }
++            !a.isReply && listOf("прочит", "read", "okundu").any { it in a.title.lowercase() }
+         }
+         val other = all.firstOrNull { !it.isReply }
+         return listOfNotNull(reply, read ?: other)
+--- a/app/src/main/java/com/akira/island/service/NotifListener.kt
++++ b/app/src/main/java/com/akira/island/service/NotifListener.kt
+@@ -95,17 +95,21 @@
+             }.getOrDefault(false)
+         }
+ 
++        private fun baseKey(key: String): String = key.substringBefore("::")
++
+         /** Never offer cancellation for foreground services, calls, or other non-clearable entries. */
+         fun canDismiss(key: String): Boolean = runCatching {
+-            connected?.getActiveNotifications(arrayOf(key))?.any { it.key == key && it.isClearable } == true
++            val raw = baseKey(key)
++            connected?.getActiveNotifications(arrayOf(raw))?.any { it.key == raw && it.isClearable } == true
+         }.getOrDefault(false)
+ 
+         private val actions = NotificationActions(
+             isClearable = ::canDismiss,
+             cancel = { key ->
++                val raw = baseKey(key)
+                 val service = connected ?: error("Notification listener is disconnected")
+-                service.cancelNotification(key)
+-                IslandBus.removeMessage(key)
++                service.cancelNotification(raw)
++                IslandBus.removeMessage(raw)
+                 Inbox.remove(key)
+             },
+         )
+@@ -282,10 +286,10 @@
+         }
+ 
+         val service = context as? NotificationListenerService
+-        if (!initial && service != null && !isMedia && call == null && !chrono && !hasProgress && live == null) {
++        if (service != null && !isMedia && call == null && !chrono && !hasProgress && live == null) {
+             // Уведомление об оплате из банка — «Оплачено» с галочкой, а не карточка сообщения
+-            if (PayMonitor.onNotification(context, sbn)) return
+-            Messages.maybeShow(service, sbn, appLabel(context, sbn.packageName))
++            if (!initial && PayMonitor.onNotification(context, sbn)) return
++            Messages.maybeShow(service, sbn, appLabel(context, sbn.packageName), silentInboxOnly = initial)
+         }
+     }
+ 
+--- a/app/src/main/java/com/akira/island/service/NotifTools.kt
++++ b/app/src/main/java/com/akira/island/service/NotifTools.kt
+@@ -74,7 +74,8 @@
+ object Inbox {
+     private const val LIMIT = 20
+ 
+-    fun add(m: AppMessage, title: String) {
++    fun add(m: AppMessage, title: String, forceWhenScreenOff: Boolean = false) {
++        if (!forceWhenScreenOff && SettingsRepo.current.historyMinutes == 0) return
+         val item = InboxItem(
+             key = m.key, pkg = m.pkg, appName = m.appName, title = title, text = m.text, avatar = m.avatar,
+             appIcon = m.appIcon, intent = m.intent, time = System.currentTimeMillis(), sensitive = m.sensitive,
+@@ -83,7 +84,10 @@
+     }
+ 
+     fun remove(key: String) {
+-        if (IslandBus.inbox.value.any { it.key == key }) IslandBus.inbox.value = IslandBus.inbox.value.filter { it.key != key }
++        val prefix = "$key::"
++        val current = IslandBus.inbox.value
++        val next = current.filter { it.key != key && !it.key.startsWith(prefix) }
++        if (next.size != current.size) IslandBus.inbox.value = next
+     }
+ 
+     fun clear() {
+@@ -93,21 +97,19 @@
+     /** Сколько ещё ждать до того, как истечёт самое старое; null — ждать нечего (или «пока не прочитаете»). */
+     fun nextExpiry(now: Long): Long? {
+         val minutes = SettingsRepo.current.historyMinutes
+-        if (minutes <= 0) return null
++        val effectiveMinutes = if (minutes == 0) 60 else minutes
++        if (effectiveMinutes < 0) return null
+         val oldest = IslandBus.inbox.value.minOfOrNull { it.time } ?: return null
+-        return (oldest + minutes * 60_000L - now).coerceAtLeast(0)
++        return (oldest + effectiveMinutes * 60_000L - now).coerceAtLeast(0)
+     }
+ 
+-    /** Убрать истёкшие; при выключенной истории — всё. */
++    /** Убрать истёкшие. */
+     fun prune(now: Long) {
+         val minutes = SettingsRepo.current.historyMinutes
+         val list = IslandBus.inbox.value
+         if (list.isEmpty()) return
+-        val keep = when {
+-            minutes == 0 -> emptyList()
+-            minutes < 0 -> list
+-            else -> list.filter { now - it.time < minutes * 60_000L }
+-        }
++        val effectiveMinutes = if (minutes == 0) 60 else minutes
++        val keep = if (effectiveMinutes < 0) list else list.filter { now - it.time < effectiveMinutes * 60_000L }
+         if (keep.size != list.size) IslandBus.inbox.value = keep
+     }
+ }
+--- a/app/src/main/java/com/akira/island/service/SystemEvents.kt
++++ b/app/src/main/java/com/akira/island/service/SystemEvents.kt
+@@ -245,6 +245,7 @@
+     }
+ 
+     fun stop() {
++        unlockWatchJob?.cancel(); unlockWatchJob = null
+         active = false
+         HotspotMonitor.broadcastStopped()
+         SystemEventObservation.state.value = SystemEventObservation.state.value.copy(observing = false)
+@@ -302,7 +303,10 @@
+             Intent.ACTION_USER_PRESENT -> onUnlocked()
+ 
+             Intent.ACTION_SCREEN_OFF -> {
++                unlockWatchJob?.cancel()
+                 IslandBus.screenOn.value = false
++                IslandBus.notice.value = null
++                IslandBus.messageDetail.value = false
+                 main.removeCallbacks(batterySample)
+                 // Блокировка может включиться чуть позже экрана — заранее прячем тексты, если она вообще есть
+                 if (keyguard?.isDeviceSecure == true) IslandBus.locked.value = true
+@@ -317,8 +321,11 @@
+                 refreshBattery()
+                 IslandBus.screenOn.value = true
+                 scheduleBatterySample()
+-                IslandBus.locked.value = isLocked()
+-                IslandBus.keyguard.value = isKeyguard()
++                val lockedNow = isLocked()
++                val keyguardNow = isKeyguard()
++                IslandBus.locked.value = lockedNow
++                IslandBus.keyguard.value = keyguardNow
++                if (lockedNow || keyguardNow) startFastUnlockWatch()
+             }
+ 
+             PowerManager.ACTION_POWER_SAVE_MODE_CHANGED ->
+@@ -427,12 +434,32 @@
+     }
+ 
+     private var lastUnlock = 0L
++    private var unlockWatchJob: kotlinx.coroutines.Job? = null
++
++    private fun startFastUnlockWatch() {
++        unlockWatchJob?.cancel()
++        unlockWatchJob = IslandBus.scope.launch {
++            repeat(60) {
++                delay(50)
++                val lockedNow = isLocked()
++                val keyguardNow = isKeyguard()
++                if (!lockedNow && IslandBus.locked.value) {
++                    onUnlocked()
++                } else {
++                    IslandBus.locked.value = lockedNow
++                    IslandBus.keyguard.value = keyguardNow
++                }
++                if (!lockedNow && !keyguardNow) return@launch
++            }
++        }
++    }
+ 
+     /**
+      * Разблокировали. Сообщение системы USER_PRESENT доходит с задержкой, поэтому служба острова
+      * зовёт это раньше — как только видит, что экран блокировки ушёл. Второй вызов подряд ничего не делает.
+      */
+     fun onUnlocked() {
++        unlockWatchJob?.cancel()
+         refreshBattery()
+         IslandBus.locked.value = false
+         IslandBus.keyguard.value = false
+--- a/app/src/main/java/com/akira/island/service/IslandService.kt
++++ b/app/src/main/java/com/akira/island/service/IslandService.kt
+@@ -74,8 +74,8 @@
+ import kotlin.math.ceil
+ import kotlin.math.floor
+ 
+-/** Distance of the lock-screen cards from the bottom edge, in mm: above the in-display fingerprint reader. */
+-private const val LOCK_PANEL_CLEAR_MM = 31f
++/** Kilit ekranı kartlarının alt kenardan uzaklığı: telefon ve kamera simgelerinin hemen üstü. */
++private const val LOCK_PANEL_CLEAR_DP = 96f
+ 
+ /**
+  * Служба спец. возможностей: только она может рисовать поверх строки состояния
+@@ -451,13 +451,15 @@
+             PixelFormat.TRANSLUCENT,
+         ).apply {
+             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+-            // The shortcuts (phone, camera) end about 12% of the screen height above the bottom edge, and the in-display
+-            // fingerprint reader sits at the bottom centre: keep the cards above its icon. The height is measured in
+-            // millimetres, so it is right for any screen size and resolution (tune LOCK_PANEL_CLEAR_MM if needed).
++            // Kilit ekranındaki telefon ve kamera kısayollarının hemen üstüne yerleştir.
+             val metrics = resources.displayMetrics
+-            val byShortcuts = (metrics.heightPixels * 0.12f).toInt()
+-            val byReader = if (metrics.ydpi in 100f..800f) (LOCK_PANEL_CLEAR_MM / 25.4f * metrics.ydpi).toInt() else (metrics.heightPixels * 0.2f).toInt()
+-            y = maxOf(byShortcuts, byReader)
++            val byShortcuts = (metrics.heightPixels * 0.105f).toInt()
++            val byDp = android.util.TypedValue.applyDimension(
++                android.util.TypedValue.COMPLEX_UNIT_DIP,
++                LOCK_PANEL_CLEAR_DP,
++                metrics,
++            ).toInt()
++            y = maxOf(byShortcuts, byDp)
+             title = "DynamicIslandLock"
+         }
+         root.visibility = View.GONE
